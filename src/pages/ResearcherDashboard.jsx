@@ -4,6 +4,7 @@ import {
   Heart, Users, FileText, MessageCircle, Star, Plus,
   Search, Filter, Calendar, LogOut, User, TrendingUp
 } from 'lucide-react';
+import { logo } from '../assets/assets';
 
 const ResearcherDashboard = () => {
   const navigate = useNavigate();
@@ -301,8 +302,8 @@ const ResearcherDashboard = () => {
       <div className="w-64 bg-white shadow-lg">
         <div className="p-6 border-b">
           <div className="flex items-center mb-4">
-            <Heart className="w-8 h-8 text-primary-600 mr-2" />
-            <span className="text-xl font-bold">CuraLink</span>
+            
+            <img src={logo} alt="CuraLink" className="h-8" />
           </div>
           <div className="bg-primary-50 rounded-lg p-3">
             <p className="text-sm font-medium text-gray-900">{userProfile?.name}</p>

@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Users, CheckCircle, Clock, AlertCircle, TrendingUp, Filter } from 'lucide-react';
+import { Users, CheckCircle, Clock, AlertCircle, TrendingUp, Filter, BarChart3, Home } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import directorReviewService from '../../services/directorReviewService';
 import ReviewAnalyticsCard from './ReviewAnalyticsCard';
 import DirectorReviewList from './DirectorReviewList';
+import { logo } from '../../assets/assets';
 
 const DirectorManagement = () => {
+  const navigate = useNavigate();
   const [analytics, setAnalytics] = useState(null);
   const [selectedStatus, setSelectedStatus] = useState('all');
   const [selectedDirector, setSelectedDirector] = useState(null);
@@ -108,11 +111,33 @@ const DirectorManagement = () => {
   }
 
   return (
-    <div className="p-6">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Director Management</h1>
-        <p className="text-gray-600">Monitor and analyze director review performance</p>
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <div className="bg-white shadow-sm border-b">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <img src={logo} alt="CuraLink" className="h-10" />
+              <div className="border-l pl-4">
+                <h1 className="text-xl font-bold text-gray-900">Director Analytics Portal</h1>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/')}
+              className="flex items-center text-gray-600 hover:text-primary-600 transition-colors"
+            >
+              <Home className="w-4 h-4 mr-2" />
+              Back to Home
+            </button>
+          </div>
+        </div>
       </div>
+
+      <div className="max-w-7xl mx-auto p-6">
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Performance Analytics Dashboard</h2>
+          <p className="text-gray-600">Monitor and analyze director review performance metrics in real-time</p>
+        </div>
 
       {/* Filter Section */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
@@ -172,6 +197,7 @@ const DirectorManagement = () => {
           loading={loading}
           selectedStatus={selectedStatus}
         />
+      </div>
       </div>
     </div>
   );

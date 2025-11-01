@@ -1,13 +1,18 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Heart, User, MapPin, Activity, ArrowRight, ArrowLeft } from 'lucide-react';
+import { logo } from '../assets/assets';
+import authService from '../services/authService';
 
 const PatientOnboarding = () => {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     email: '',
+    password: '',
     condition: '',
     symptoms: '',
     location: '',
@@ -23,13 +28,32 @@ const PatientOnboarding = () => {
     }));
   };
 
-  const handleNext = () => {
+  const handleNext = async () => {
+    setError('');
+
     if (step < 3) {
       setStep(step + 1);
     } else {
-      // Save data and navigate to dashboard
-      localStorage.setItem('patientProfile', JSON.stringify(formData));
-      navigate('/patient/dashboard');
+      // Register user with backend
+      setLoading(true);
+      try {
+        await authService.register({
+          email: formData.email,
+          password: formData.password,
+          name: formData.name,
+          role: 'patient',
+          condition: formData.condition,
+          symptoms: formData.symptoms,
+          city: formData.city,
+          country: formData.country
+        });
+
+        // Navigate to dashboard after successful registration
+        navigate('/patient/dashboard');
+      } catch (err) {
+        setError(err.response?.data?.message || 'Registration failed. Please try again.');
+        setLoading(false);
+      }
     }
   };
 
@@ -44,7 +68,7 @@ const PatientOnboarding = () => {
   const isStepValid = () => {
     switch (step) {
       case 1:
-        return formData.name && formData.email;
+        return formData.name && formData.email && formData.password && formData.password.length >= 6;
       case 2:
         return formData.condition || formData.symptoms;
       case 3:
@@ -59,8 +83,7 @@ const PatientOnboarding = () => {
       <div className="container mx-auto px-6 py-8">
         {/* Header */}
         <div className="flex items-center mb-8">
-          <Heart className="w-8 h-8 text-primary-600 mr-2" />
-          <span className="text-2xl font-bold text-gray-900">CuraLink</span>
+          <img src={logo} alt="CuraLink Logo" className="h-10" />
         </div>
 
         {/* Progress Bar */}
@@ -115,7 +138,28 @@ const PatientOnboarding = () => {
                     placeholder="Enter your email address"
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Password *
+                  </label>
+                  <input
+                    type="password"
+                    name="password"
+                    value={formData.password}
+                    onChange={handleInputChange}
+                    className="input"
+                    placeholder="Create a password (min 6 characters)"
+                  />
+                  {formData.password && formData.password.length < 6 && (
+                    <p className="text-xs text-red-500 mt-1">Password must be at least 6 characters</p>
+                  )}
+                </div>
               </div>
+              {error && (
+                <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                  {error}
+                </div>
+              )}
             </div>
           )}
 
@@ -210,15 +254,24 @@ const PatientOnboarding = () => {
             </button>
             <button
               onClick={handleNext}
-              disabled={!isStepValid()}
+              disabled={!isStepValid() || loading}
               className={`flex items-center px-6 py-3 rounded-lg font-medium transition-all duration-200 ${
-                isStepValid()
+                isStepValid() && !loading
                   ? 'bg-primary-600 text-white hover:bg-primary-700 shadow-md hover:shadow-lg'
                   : 'bg-gray-300 text-gray-500 cursor-not-allowed'
               }`}
             >
-              {step === 3 ? 'Complete Setup' : 'Next'}
-              <ArrowRight className="w-4 h-4 ml-2" />
+              {loading ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Creating Account...
+                </>
+              ) : (
+                <>
+                  {step === 3 ? 'Complete Setup' : 'Next'}
+                  <ArrowRight className="w-4 h-4 ml-2" />
+                </>
+              )}
             </button>
           </div>
         </div>

@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8080';
+const API_BASE_URL = 'http://localhost:8080/api/v1';
 
 class DirectorReviewService {
   /**
@@ -15,7 +15,7 @@ class DirectorReviewService {
       const response = await axios.get(`${API_BASE_URL}/director-review/analytics`, {
         params,
       });
-      return response.data;
+      return response.data.data; // Return the data object from the API response
     } catch (error) {
       console.error('Error fetching director review analytics:', error);
       throw error;

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Heart, User, BookOpen, Link, Calendar, ArrowRight, ArrowLeft } from 'lucide-react';
+import { logo } from '../assets/assets';
 
 const ResearcherOnboarding = () => {
   const navigate = useNavigate();
@@ -60,8 +61,8 @@ const ResearcherOnboarding = () => {
       <div className="container mx-auto px-6 py-8">
         {/* Header */}
         <div className="flex items-center mb-8">
-          <Heart className="w-8 h-8 text-primary-600 mr-2" />
-          <span className="text-2xl font-bold text-gray-900">CuraLink</span>
+          
+          <img src={logo} alt="CuraLink Logo" className="h-10" />
         </div>
 
         {/* Progress Bar */}
