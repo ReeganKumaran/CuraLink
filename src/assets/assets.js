@@ -2,6 +2,7 @@
 
 // Logo
 export { default as logo } from './CuraLinc_Logo_RGB_POS.png';
+export { default as logo_1 } from './logo_1.png';
 
 // Hero & Featured Images
 export { default as heroImage } from './Adobe_Stock_372778825.jpeg';

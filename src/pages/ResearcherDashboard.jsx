@@ -26,7 +26,8 @@ const ResearcherDashboard = () => {
         const userData = await authService.getCurrentUser();
 
         // Check if user has correct role
-        if (userData.user.role !== 'researcher') {
+        const role = userData.user.role?.toLowerCase?.() || '';
+        if (role !== 'researcher') {
           navigate('/login');
           return;
         }
