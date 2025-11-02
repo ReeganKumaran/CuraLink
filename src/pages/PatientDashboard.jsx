@@ -1,17 +1,26 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Heart, Users, BookOpen, FileText, MessageCircle, Star,
-  Search, Filter, Calendar, MapPin, LogOut, User
+  Search, Filter, Calendar, MapPin, LogOut, User, X
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
+import { useForumData } from '../hooks/useForumData';
 
 const PatientDashboard = () => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const { questions, addQuestion } = useForumData();
+  const [isAskModalOpen, setIsAskModalOpen] = useState(false);
+  const [selectedQuestion, setSelectedQuestion] = useState(null);
+  const [askForm, setAskForm] = useState({
+    category: 'Cancer Research',
+    title: '',
+    question: '',
+  });
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -51,6 +60,59 @@ const PatientDashboard = () => {
   const handleLogout = () => {
     authService.logout();
     navigate('/');
+  };
+
+  const categories = useMemo(
+    () => [
+      'Cancer Research',
+      'Clinical Trials',
+      'Treatment Options',
+      'General Support',
+    ],
+    []
+  );
+
+  const handleAskQuestionSubmit = (e) => {
+    e.preventDefault();
+    if (!askForm.title.trim() || !askForm.question.trim()) {
+      return;
+    }
+
+    addQuestion({
+      ...askForm,
+      authorRole: 'patient',
+      authorName: userProfile?.name || 'Patient',
+    });
+    setAskForm({
+      category: 'Cancer Research',
+      title: '',
+      question: '',
+    });
+    setIsAskModalOpen(false);
+  };
+
+  const openDiscussion = (question) => {
+    setSelectedQuestion(question);
+  };
+
+  const closeDiscussion = () => {
+    setSelectedQuestion(null);
+  };
+
+  const handleAskFormChange = (field) => (event) => {
+    setAskForm((prev) => ({
+      ...prev,
+      [field]: event.target.value,
+    }));
+  };
+
+  const formatDate = (isoString) => {
+    const date = new Date(isoString);
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
   };
 
   const sidebarItems = [
@@ -230,14 +292,14 @@ const PatientDashboard = () => {
                 <h3 className="font-semibold">{pub.title}</h3>
                 <div className="flex items-center space-x-4 mt-2 text-sm text-gray-600">
                   <span>{pub.journal}</span>
-                  <span>•</span>
+                  <span aria-hidden="true">&bull;</span>
                   <span>{pub.year}</span>
                 </div>
                 <div className="mt-4 flex space-x-2">
                   <button className="text-primary-600 hover:text-primary-700 text-sm font-medium">
                     Read Summary
                   </button>
-                  <span className="text-gray-300">•</span>
+                  <span className="text-gray-300" aria-hidden="true">&bull;</span>
                   <button className="text-primary-600 hover:text-primary-700 text-sm font-medium">
                     Full Paper
                   </button>
@@ -249,17 +311,73 @@ const PatientDashboard = () => {
 
       case 'forums':
         return (
-          <div className="space-y-4">
-            <h2 className="text-2xl font-bold mb-4">Forums</h2>
-            <div className="card">
-              <h3 className="font-semibold mb-2">Cancer Research Community</h3>
-              <p className="text-sm text-gray-600 mb-3">Ask questions and get answers from researchers</p>
-              <button className="btn-primary text-sm px-4 py-2">Join Discussion</button>
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold">Forum Discussions</h2>
+                <p className="text-sm text-gray-600">
+                  Ask questions and collaborate with the researcher community.
+                </p>
+              </div>
+              <button
+                onClick={() => setIsAskModalOpen(true)}
+                className="btn-primary text-sm px-4 py-2"
+              >
+                Ask a Question
+              </button>
             </div>
-            <div className="card">
-              <h3 className="font-semibold mb-2">Clinical Trials Insights</h3>
-              <p className="text-sm text-gray-600 mb-3">Learn about ongoing trials and share experiences</p>
-              <button className="btn-primary text-sm px-4 py-2">Join Discussion</button>
+
+            <div className="space-y-4">
+              {questions.map((question) => (
+                <div key={question.id} className="card">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <span className="inline-flex items-center rounded-full bg-primary-100 text-primary-700 text-xs font-medium px-3 py-1 mb-3">
+                        {question.category}
+                      </span>
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        {question.title}
+                      </h3>
+                      <div className="flex items-center space-x-4 mt-2 text-sm text-gray-600">
+                        <span>
+                          By{' '}
+                          {question.authorRole === 'patient'
+                            ? 'Patient'
+                            : question.authorName || 'Member'}
+                        </span>
+                        <span aria-hidden="true">&bull;</span>
+                        <span>{question.replies.length} {question.replies.length === 1 ? 'reply' : 'replies'}</span>
+                        <span aria-hidden="true">&bull;</span>
+                        <span>{formatDate(question.createdAt)}</span>
+                      </div>
+                      <p className="text-sm text-gray-600 mt-3 line-clamp-2">
+                        {question.question}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => openDiscussion(question)}
+                      className="text-primary-600 hover:text-primary-700 text-sm font-medium"
+                    >
+                      View Discussion →
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              {questions.length === 0 && (
+                <div className="card text-center py-10">
+                  <h3 className="text-lg font-semibold text-gray-800">No questions yet</h3>
+                  <p className="text-sm text-gray-600 mt-2">
+                    Be the first to ask a question and start a discussion with researchers.
+                  </p>
+                  <button
+                    onClick={() => setIsAskModalOpen(true)}
+                    className="btn-primary text-sm px-5 py-2 mt-4"
+                  >
+                    Ask a Question
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         );
@@ -316,53 +434,198 @@ const PatientDashboard = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Sidebar */}
-      <div className="w-64 bg-white shadow-lg">
-        <div className="p-6 border-b">
-          <div className="flex items-center mb-4">
-            
-            <img src={logo} alt="CuraLink" className="h-8" />
+    <>
+      <div className="min-h-screen bg-gray-50 flex">
+        {/* Sidebar */}
+        <div className="w-64 bg-white shadow-lg">
+          <div className="p-6 border-b">
+            <div className="flex items-center mb-4">
+              
+              <img src={logo} alt="CuraLink" className="h-8" />
+            </div>
+            <div className="bg-primary-50 rounded-lg p-3">
+              <p className="text-sm font-medium text-gray-900">{userProfile?.name}</p>
+              <p className="text-xs text-gray-600">{userProfile?.condition || 'Patient'}</p>
+            </div>
           </div>
-          <div className="bg-primary-50 rounded-lg p-3">
-            <p className="text-sm font-medium text-gray-900">{userProfile?.name}</p>
-            <p className="text-xs text-gray-600">{userProfile?.condition || 'Patient'}</p>
-          </div>
-        </div>
 
-        <nav className="p-4">
-          {sidebarItems.map(item => (
+          <nav className="p-4">
+            {sidebarItems.map(item => (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg mb-1 transition-colors ${
+                  activeTab === item.id
+                    ? 'bg-primary-100 text-primary-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                <span className="w-5 h-5">{item.icon}</span>
+                <span className="font-medium">{item.label}</span>
+              </button>
+            ))}
+          </nav>
+
+          <div className="p-4 mt-auto border-t">
             <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg mb-1 transition-colors ${
-                activeTab === item.id
-                  ? 'bg-primary-100 text-primary-700'
-                  : 'text-gray-600 hover:bg-gray-100'
-              }`}
+              onClick={handleLogout}
+              className="w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
             >
-              <span className="w-5 h-5">{item.icon}</span>
-              <span className="font-medium">{item.label}</span>
+              <LogOut className="w-5 h-5" />
+              <span className="font-medium">Logout</span>
             </button>
-          ))}
-        </nav>
+          </div>
+        </div>
 
-        <div className="p-4 mt-auto border-t">
-          <button
-            onClick={handleLogout}
-            className="w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-          >
-            <LogOut className="w-5 h-5" />
-            <span className="font-medium">Logout</span>
-          </button>
+        {/* Main Content */}
+        <div className="flex-1 p-8">
+          {renderContent()}
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 p-8">
-        {renderContent()}
-      </div>
-    </div>
+      {isAskModalOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-xl w-full p-8 relative">
+            <button
+              onClick={() => setIsAskModalOpen(false)}
+              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
+              aria-label="Close ask question"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <h3 className="text-2xl font-semibold text-gray-900 mb-6">Ask a Question</h3>
+            <form className="space-y-5" onSubmit={handleAskQuestionSubmit}>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">Category</label>
+                <select
+                  className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  value={askForm.category}
+                  onChange={handleAskFormChange('category')}
+                >
+                  {categories.map((category) => (
+                    <option key={category}>{category}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">Title</label>
+                <input
+                  type="text"
+                  value={askForm.title}
+                  onChange={handleAskFormChange('title')}
+                  placeholder="Enter your question title..."
+                  className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">Question</label>
+                <textarea
+                  value={askForm.question}
+                  onChange={handleAskFormChange('question')}
+                  placeholder="Enter your question details..."
+                  rows={5}
+                  className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
+                  required
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAskModalOpen(false)}
+                  className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary px-6 py-2 rounded-full text-sm font-semibold"
+                >
+                  Post Question
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {selectedQuestion && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full p-8 relative">
+            <button
+              onClick={closeDiscussion}
+              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
+              aria-label="Close discussion"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="space-y-4">
+              <div>
+                <span className="inline-flex items-center rounded-full bg-primary-100 text-primary-700 text-xs font-medium px-3 py-1 mb-3">
+                  {selectedQuestion.category}
+                </span>
+                <h3 className="text-2xl font-semibold text-gray-900">
+                  {selectedQuestion.title}
+                </h3>
+                <div className="flex items-center space-x-3 text-sm text-gray-600 mt-2">
+                  <span>
+                    Asked by{' '}
+                    {selectedQuestion.authorRole === 'patient'
+                      ? 'Patient'
+                      : selectedQuestion.authorName || 'Member'}
+                  </span>
+                  <span className="text-gray-300" aria-hidden="true">&bull;</span>
+                  <span>{formatDate(selectedQuestion.createdAt)}</span>
+                </div>
+              </div>
+
+              <p className="text-gray-700 leading-relaxed">{selectedQuestion.question}</p>
+
+              <div className="border-t pt-4">
+                <h4 className="text-lg font-semibold text-gray-900 mb-3">
+                  {selectedQuestion.replies.length > 0
+                    ? `${selectedQuestion.replies.length} Responses`
+                    : 'No responses yet'}
+                </h4>
+                <div className="space-y-4 max-h-72 overflow-y-auto pr-1">
+                  {selectedQuestion.replies.map((reply) => (
+                    <div key={reply.id} className="border rounded-2xl p-4 bg-gray-50">
+                      <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
+                        <span>
+                          {reply.authorName}{' '}
+                          <span className="text-gray-300" aria-hidden="true">&bull;</span>{' '}
+                          {reply.authorRole === 'researcher' ? 'Researcher' : 'Member'}
+                        </span>
+                        <span>{formatDate(reply.createdAt)}</span>
+                      </div>
+                      <p className="text-gray-700 text-sm leading-relaxed">{reply.message}</p>
+                    </div>
+                  ))}
+
+                  {selectedQuestion.replies.length === 0 && (
+                    <p className="text-sm text-gray-500">
+                      Researchers will respond to your question soon. You'll receive a notification once a reply is posted.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={closeDiscussion}
+                  className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 
