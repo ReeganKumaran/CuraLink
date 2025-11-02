@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Heart,
@@ -18,14 +18,16 @@ import {
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
+import aiService from '../services/aiService';
 import { useForumData } from '../hooks/useForumData';
+import useCommunityChat from '../hooks/useCommunityChat';
 
 const ResearcherDashboard = () => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
-  const { questions, communities, addQuestion, addReply, addCommunity } = useForumData();
+  const { questions, addQuestion, addReply } = useForumData();
 
   const [isAskModalOpen, setIsAskModalOpen] = useState(false);
   const [isReplyModalOpen, setIsReplyModalOpen] = useState(false);
@@ -33,12 +35,36 @@ const ResearcherDashboard = () => {
   const [discussionQuestionId, setDiscussionQuestionId] = useState(null);
   const [replyTargetId, setReplyTargetId] = useState(null);
 
+  const {
+    communities: communityList,
+    communitiesLoading,
+    communitiesError,
+    createCommunity: createCommunityRoom,
+    openCommunityChat,
+    closeCommunityChat,
+    sendMessage,
+    activeCommunity,
+    activeCommunityId,
+    activeMessages,
+    socketConnected,
+    socketError,
+    isChatOpen,
+  } = useCommunityChat();
+
+  const [communitySubmitting, setCommunitySubmitting] = useState(false);
+  const [communitySubmitError, setCommunitySubmitError] = useState(null);
+  const [chatMessage, setChatMessage] = useState('');
+  const [chatError, setChatError] = useState(null);
+  const messagesEndRef = useRef(null);
+
   const [askForm, setAskForm] = useState({
     category: 'Cancer Research',
     title: '',
     question: '',
   });
   const [replyForm, setReplyForm] = useState({ message: '' });
+  const [replyAIProcessing, setReplyAIProcessing] = useState(false);
+  const [replyAIError, setReplyAIError] = useState(null);
   const [communityForm, setCommunityForm] = useState({
     name: '',
     description: '',
@@ -77,6 +103,24 @@ const ResearcherDashboard = () => {
 
     fetchUser();
   }, [navigate]);
+
+  useEffect(() => {
+    setChatMessage('');
+    setChatError(null);
+  }, [activeCommunityId]);
+
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activeMessages]);
+
+  useEffect(() => {
+    if (!isReplyModalOpen) {
+      setReplyAIProcessing(false);
+      setReplyAIError(null);
+    }
+  }, [isReplyModalOpen]);
 
   const discussionQuestion = useMemo(
     () => (discussionQuestionId ? questions.find((q) => q.id === discussionQuestionId) || null : null),
@@ -196,6 +240,16 @@ const ResearcherDashboard = () => {
     });
   };
 
+  const formatDateTime = (isoString) => {
+    const date = new Date(isoString);
+    return date.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
+
   const handleAskFormChange = (field) => (event) => {
     setAskForm((prev) => ({
       ...prev,
@@ -225,11 +279,14 @@ const ResearcherDashboard = () => {
   const openReplyModal = (question) => {
     setReplyTargetId(question.id);
     setReplyForm({ message: '' });
+    setReplyAIError(null);
+    setReplyAIProcessing(false);
     setIsReplyModalOpen(true);
   };
 
   const handleReplySubmit = (event) => {
     event.preventDefault();
+    setReplyAIError(null);
     if (!replyTarget || !replyForm.message.trim()) {
       return;
     }
@@ -243,29 +300,90 @@ const ResearcherDashboard = () => {
       setIsReplyModalOpen(false);
       setReplyTargetId(null);
       setReplyForm({ message: '' });
+      setReplyAIError(null);
+      setReplyAIProcessing(false);
     } catch (error) {
       console.error('Failed to add reply', error);
     }
   };
 
-  const handleCommunitySubmit = (event) => {
+  const handleReplyAI = async () => {
+    if (!replyTarget) {
+      setReplyAIError('Select a question to reply to first.');
+      return;
+    }
+
+    setReplyAIError(null);
+    setReplyAIProcessing(true);
+    try {
+      const result = await aiService.refineResearcherReply({
+        questionTitle: replyTarget.title,
+        questionBody: replyTarget.question,
+        currentResponse: replyForm.message,
+      });
+      setReplyForm({ message: result.response || replyForm.message });
+    } catch (error) {
+      const message =
+        error?.response?.data?.message || 'Unable to generate an AI reply right now. Please try again.';
+      setReplyAIError(message);
+    } finally {
+      setReplyAIProcessing(false);
+    }
+  };
+
+  const handleCommunitySubmit = async (event) => {
     event.preventDefault();
     if (!communityForm.name.trim() || !communityForm.description.trim()) {
       return;
     }
 
     try {
-      addCommunity({
-        name: communityForm.name,
-        description: communityForm.description,
-        creatorName: userProfile?.name || 'Researcher',
-        creatorRole: 'researcher',
+      setCommunitySubmitError(null);
+      setCommunitySubmitting(true);
+
+      const created = await createCommunityRoom({
+        name: communityForm.name.trim(),
+        description: communityForm.description.trim(),
       });
-      setIsCommunityModalOpen(false);
+
+      await openCommunityChat(created.id);
+
       setCommunityForm({ name: '', description: '' });
+      setIsCommunityModalOpen(false);
     } catch (error) {
       console.error('Failed to create community', error);
+      setCommunitySubmitError(
+        error?.response?.data?.message || 'Unable to create community. Please try again.'
+      );
+    } finally {
+      setCommunitySubmitting(false);
     }
+  };
+
+  const handleOpenChat = async (communityId) => {
+    if (!communityId) return;
+    try {
+      setChatError(null);
+      await openCommunityChat(communityId);
+    } catch (error) {
+      console.error('Failed to open community chat', error);
+      setChatError(error?.response?.data?.message || 'Unable to join community chat right now.');
+    }
+  };
+
+  const handleCloseChat = () => {
+    closeCommunityChat();
+    setChatMessage('');
+    setChatError(null);
+  };
+
+  const handleSendChat = (event) => {
+    event.preventDefault();
+    if (!activeCommunityId || !chatMessage.trim()) {
+      return;
+    }
+    sendMessage(activeCommunityId, chatMessage);
+    setChatMessage('');
   };
 
   const renderForumQuestionCard = (question, { showReply } = { showReply: false }) => (
@@ -506,26 +624,84 @@ const ResearcherDashboard = () => {
                 <div className="card">
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-lg font-semibold text-gray-900">Communities</h3>
-                    <button
-                      onClick={() => setIsCommunityModalOpen(true)}
-                      className="btn-primary text-sm px-4 py-2"
-                    >
-                      Create
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={`flex items-center gap-2 text-xs font-medium ${
+                          socketConnected ? 'text-green-600' : 'text-gray-400'
+                        }`}
+                      >
+                        <span
+                          className={`w-2.5 h-2.5 rounded-full ${
+                            socketConnected ? 'bg-green-500' : 'bg-gray-400'
+                          }`}
+                        />
+                        {socketConnected ? 'Live' : 'Offline'}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setCommunitySubmitError(null);
+                          setIsCommunityModalOpen(true);
+                        }}
+                        className="btn-primary text-sm px-4 py-2"
+                      >
+                        Create
+                      </button>
+                    </div>
                   </div>
+                  {communitiesError && (
+                    <p className="text-sm text-red-500 mb-2">
+                      Unable to load communities right now. Please refresh.
+                    </p>
+                  )}
+                  {chatError && (
+                    <p className="text-sm text-red-500 mb-2">{chatError}</p>
+                  )}
+                  {socketError && (
+                    <p className="text-sm text-red-500 mb-2">{socketError}</p>
+                  )}
                   <div className="space-y-4">
-                    {communities.length === 0 ? (
+                    {communitiesLoading ? (
+                      <p className="text-sm text-gray-500">Loading communities...</p>
+                    ) : communityList.length === 0 ? (
                       <p className="text-sm text-gray-500">
                         No communities yet. Start one to gather experts.
                       </p>
                     ) : (
-                      communities.map((community) => (
+                      communityList.map((community) => (
                         <div key={community.id} className="border rounded-2xl p-4">
-                          <h4 className="text-sm font-semibold text-gray-900">{community.name}</h4>
-                          <p className="text-sm text-gray-600 mt-2">{community.description}</p>
-                          <p className="text-xs text-gray-400 mt-3">
-                            Created by {community.creatorName} on {formatDate(community.createdAt)}
-                          </p>
+                          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                            <div>
+                              <h4 className="text-sm font-semibold text-gray-900">{community.name}</h4>
+                              <p className="text-xs text-gray-500 mt-1">
+                                Created by {community.creatorName || 'Researcher'} on{' '}
+                                {formatDate(community.createdAt)}
+                              </p>
+                              {community.description ? (
+                                <p className="text-sm text-gray-600 mt-2">{community.description}</p>
+                              ) : (
+                                <p className="text-sm text-gray-500 mt-2">
+                                  No description yet. Open the chat to introduce the topic.
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-end sm:items-center sm:flex-col gap-2">
+                              <span
+                                className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
+                                  community.isMember
+                                    ? 'bg-primary-50 text-primary-700'
+                                    : 'bg-gray-100 text-gray-600'
+                                }`}
+                              >
+                                {community.isMember ? 'You are a member' : 'Not joined'}
+                              </span>
+                              <button
+                                onClick={() => handleOpenChat(community.id)}
+                                className="btn-secondary text-xs px-3 py-1.5"
+                              >
+                                {community.isMember ? 'Open Chat' : 'Join Chat'}
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       ))
                     )}
@@ -793,6 +969,9 @@ const ResearcherDashboard = () => {
               onClick={() => {
                 setIsReplyModalOpen(false);
                 setReplyTargetId(null);
+                setReplyForm({ message: '' });
+                setReplyAIError(null);
+                setReplyAIProcessing(false);
               }}
               className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
               aria-label="Close reply modal"
@@ -812,7 +991,17 @@ const ResearcherDashboard = () => {
               </div>
               <form onSubmit={handleReplySubmit} className="space-y-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Your Response</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium text-gray-700">Your Response</label>
+                    <button
+                      type="button"
+                      onClick={handleReplyAI}
+                      disabled={replyAIProcessing}
+                      className="text-sm font-medium text-primary-600 hover:text-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {replyAIProcessing ? 'Generating…' : 'AI Assist'}
+                    </button>
+                  </div>
                   <textarea
                     value={replyForm.message}
                     onChange={(event) => setReplyForm({ message: event.target.value })}
@@ -821,6 +1010,7 @@ const ResearcherDashboard = () => {
                     className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
                     required
                   />
+                  {replyAIError && <p className="text-sm text-red-500">{replyAIError}</p>}
                 </div>
                 <div className="flex items-center justify-end gap-3 pt-2">
                   <button
@@ -828,6 +1018,9 @@ const ResearcherDashboard = () => {
                     onClick={() => {
                       setIsReplyModalOpen(false);
                       setReplyTargetId(null);
+                      setReplyForm({ message: '' });
+                      setReplyAIError(null);
+                      setReplyAIProcessing(false);
                     }}
                     className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
                   >
@@ -887,6 +1080,9 @@ const ResearcherDashboard = () => {
                     required
                   />
                 </div>
+                {communitySubmitError && (
+                  <p className="text-sm text-red-500">{communitySubmitError}</p>
+                )}
                 <div className="flex items-center justify-end gap-3 pt-2">
                   <button
                     type="button"
@@ -895,8 +1091,104 @@ const ResearcherDashboard = () => {
                   >
                     Cancel
                   </button>
-                  <button type="submit" className="btn-primary px-6 py-2 rounded-full text-sm font-semibold">
-                    Create Community
+                  <button
+                    type="submit"
+                    className="btn-primary px-6 py-2 rounded-full text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={communitySubmitting}
+                  >
+                    {communitySubmitting ? 'Creating...' : 'Create Community'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isChatOpen && activeCommunity && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-3xl w-full p-8 relative">
+            <button
+              onClick={handleCloseChat}
+              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
+              aria-label="Close community chat"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                <div>
+                  <h3 className="text-2xl font-semibold text-gray-900">{activeCommunity.name}</h3>
+                  {activeCommunity.description && (
+                    <p className="text-sm text-gray-600 mt-2">{activeCommunity.description}</p>
+                  )}
+                  {!activeCommunity.description && (
+                    <p className="text-sm text-gray-500 mt-2">
+                      Start the conversation with a welcome note or research update.
+                    </p>
+                  )}
+                </div>
+                <div
+                  className={`flex items-center gap-2 text-sm ${
+                    socketConnected ? 'text-green-600' : 'text-gray-400'
+                  }`}
+                >
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full ${
+                      socketConnected ? 'bg-green-500' : 'bg-gray-400'
+                    }`}
+                  />
+                  {socketConnected ? 'Live connection' : 'Connecting...'}
+                </div>
+              </div>
+
+              <div className="bg-gray-50 rounded-2xl border max-h-80 overflow-y-auto p-4 space-y-4">
+                {activeMessages.length === 0 ? (
+                  <p className="text-sm text-gray-500">No messages yet. Be the first to share.</p>
+                ) : (
+                  activeMessages.map((message) => (
+                    <div key={message.id} className="bg-white rounded-xl border p-3 shadow-sm">
+                      <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                        <span className="font-medium text-gray-800">{message.senderName}</span>
+                        <span>{formatDateTime(message.createdAt)}</span>
+                      </div>
+                      <p className="text-sm text-gray-700 whitespace-pre-wrap">{message.message}</p>
+                    </div>
+                  ))
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              <form onSubmit={handleSendChat} className="space-y-3">
+                {socketError && (
+                  <p className="text-sm text-red-500">{socketError}</p>
+                )}
+                <textarea
+                  value={chatMessage}
+                  onChange={(event) => setChatMessage(event.target.value)}
+                  rows={3}
+                  placeholder={
+                    socketConnected
+                      ? 'Share an update, ask for insights, or welcome new members...'
+                      : 'Connecting to chat...'
+                  }
+                  className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
+                  disabled={!socketConnected}
+                />
+                <div className="flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={handleCloseChat}
+                    className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-primary px-6 py-2 rounded-full text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={!socketConnected || !chatMessage.trim()}
+                  >
+                    Send
                   </button>
                 </div>
               </form>

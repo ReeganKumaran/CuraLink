@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
+import aiService from '../services/aiService';
 import { useForumData } from '../hooks/useForumData';
 
 const PatientDashboard = () => {
@@ -21,6 +22,8 @@ const PatientDashboard = () => {
     title: '',
     question: '',
   });
+  const [askAIDrafting, setAskAIDrafting] = useState(false);
+  const [askAIError, setAskAIError] = useState(null);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -57,6 +60,13 @@ const PatientDashboard = () => {
     fetchUserData();
   }, [navigate]);
 
+  useEffect(() => {
+    if (!isAskModalOpen) {
+      setAskAIDrafting(false);
+      setAskAIError(null);
+    }
+  }, [isAskModalOpen]);
+
   const handleLogout = () => {
     authService.logout();
     navigate('/');
@@ -77,6 +87,7 @@ const PatientDashboard = () => {
     if (!askForm.title.trim() || !askForm.question.trim()) {
       return;
     }
+    setAskAIError(null);
 
     addQuestion({
       ...askForm,
@@ -89,6 +100,34 @@ const PatientDashboard = () => {
       question: '',
     });
     setIsAskModalOpen(false);
+  };
+
+  const handleAskAIAssist = async () => {
+    if (!askForm.title.trim()) {
+      setAskAIError('Enter a title so the assistant knows what you want to ask.');
+      return;
+    }
+
+    setAskAIError(null);
+    setAskAIDrafting(true);
+    try {
+      const result = await aiService.draftPatientQuestion({
+        title: askForm.title,
+        category: askForm.category,
+        background: askForm.question,
+      });
+      setAskForm((prev) => ({
+        ...prev,
+        title: result.title || prev.title,
+        question: result.question || prev.question,
+      }));
+    } catch (error) {
+      const message =
+        error?.response?.data?.message || 'Unable to generate a question right now. Please try again.';
+      setAskAIError(message);
+    } finally {
+      setAskAIDrafting(false);
+    }
   };
 
   const openDiscussion = (question) => {
@@ -509,7 +548,17 @@ const PatientDashboard = () => {
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">Title</label>
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-gray-700">Title</label>
+                  <button
+                    type="button"
+                    onClick={handleAskAIAssist}
+                    disabled={askAIDrafting}
+                    className="text-sm font-medium text-primary-600 hover:text-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {askAIDrafting ? 'Generating…' : 'AI Assist'}
+                  </button>
+                </div>
                 <input
                   type="text"
                   value={askForm.title}
@@ -530,6 +579,7 @@ const PatientDashboard = () => {
                   className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
                   required
                 />
+                {askAIError && <p className="text-sm text-red-500">{askAIError}</p>}
               </div>
 
               <div className="flex items-center justify-end space-x-3 pt-2">
