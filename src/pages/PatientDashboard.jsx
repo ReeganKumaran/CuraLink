@@ -5,23 +5,51 @@ import {
   Search, Filter, Calendar, MapPin, LogOut, User
 } from 'lucide-react';
 import { logo } from '../assets/assets';
+import authService from '../services/authService';
 
 const PatientDashboard = () => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
   const [userProfile, setUserProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const profile = localStorage.getItem('patientProfile');
-    if (profile) {
-      setUserProfile(JSON.parse(profile));
-    } else {
-      navigate('/patient/onboarding');
-    }
+    const fetchUserData = async () => {
+      try {
+        // Check if user is authenticated
+        if (!authService.isAuthenticated()) {
+          navigate('/login');
+          return;
+        }
+
+        // Get current user from backend
+        const userData = await authService.getCurrentUser();
+
+        // Check if user has correct role
+        if (userData.user.role !== 'patient') {
+          navigate('/login');
+          return;
+        }
+
+        setUserProfile({
+          name: userData.user.name,
+          email: userData.user.email,
+          condition: userData.profile?.condition || 'Not specified',
+          city: userData.profile?.city,
+          country: userData.profile?.country
+        });
+        setLoading(false);
+      } catch (error) {
+        console.error('Error fetching user data:', error);
+        navigate('/login');
+      }
+    };
+
+    fetchUserData();
   }, [navigate]);
 
   const handleLogout = () => {
-    localStorage.removeItem('patientProfile');
+    authService.logout();
     navigate('/');
   };
 
@@ -274,6 +302,18 @@ const PatientDashboard = () => {
         return null;
     }
   };
+
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading your dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex">

@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import LandingPage from './pages/LandingPage';
+import Login from './pages/Login';
 import PatientOnboarding from './pages/PatientOnboarding';
 import ResearcherOnboarding from './pages/ResearcherOnboarding';
 import PatientDashboard from './pages/PatientDashboard';
@@ -14,6 +15,7 @@ function App() {
       <div className="min-h-screen bg-gray-50">
         <Routes>
           <Route path="/" element={<LandingPage />} />
+          <Route path="/login" element={<Login />} />
           <Route path="/patient/onboarding" element={<PatientOnboarding />} />
           <Route path="/researcher/onboarding" element={<ResearcherOnboarding />} />
           <Route path="/patient/dashboard" element={<PatientDashboard />} />

@@ -5,23 +5,52 @@ import {
   Search, Filter, Calendar, LogOut, User, TrendingUp
 } from 'lucide-react';
 import { logo } from '../assets/assets';
+import authService from '../services/authService';
 
 const ResearcherDashboard = () => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
   const [userProfile, setUserProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const profile = localStorage.getItem('researcherProfile');
-    if (profile) {
-      setUserProfile(JSON.parse(profile));
-    } else {
-      navigate('/researcher/onboarding');
-    }
+    const fetchUserData = async () => {
+      try {
+        // Check if user is authenticated
+        if (!authService.isAuthenticated()) {
+          navigate('/login');
+          return;
+        }
+
+        // Get current user from backend
+        const userData = await authService.getCurrentUser();
+
+        // Check if user has correct role
+        if (userData.user.role !== 'researcher') {
+          navigate('/login');
+          return;
+        }
+
+        setUserProfile({
+          name: userData.user.name,
+          email: userData.user.email,
+          institution: userData.profile?.institution || 'Not specified',
+          specialties: userData.profile?.specialties?.join(', ') || 'Not specified',
+          orcid: userData.profile?.orcid,
+          researchGateProfile: userData.profile?.researchGateProfile
+        });
+        setLoading(false);
+      } catch (error) {
+        console.error('Error fetching user data:', error);
+        navigate('/login');
+      }
+    };
+
+    fetchUserData();
   }, [navigate]);
 
   const handleLogout = () => {
-    localStorage.removeItem('researcherProfile');
+    authService.logout();
     navigate('/');
   };
 
@@ -295,6 +324,18 @@ const ResearcherDashboard = () => {
         return null;
     }
   };
+
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading your dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex">

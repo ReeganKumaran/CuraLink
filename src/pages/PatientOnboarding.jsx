@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Heart, User, MapPin, Activity, ArrowRight, ArrowLeft } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
@@ -51,7 +51,14 @@ const PatientOnboarding = () => {
         // Navigate to dashboard after successful registration
         navigate('/patient/dashboard');
       } catch (err) {
-        setError(err.response?.data?.message || 'Registration failed. Please try again.');
+        const errorMsg = err.response?.data?.message || 'Registration failed. Please try again.';
+
+        // Check if user already exists
+        if (errorMsg.includes('already exists')) {
+          setError('This email is already registered. Please sign in instead.');
+        } else {
+          setError(errorMsg);
+        }
         setLoading(false);
       }
     }
@@ -158,6 +165,13 @@ const PatientOnboarding = () => {
               {error && (
                 <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
                   {error}
+                  {error.includes('already registered') && (
+                    <div className="mt-2">
+                      <Link to="/login" className="text-primary-600 hover:text-primary-700 font-medium underline">
+                        Click here to sign in →
+                      </Link>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -273,6 +287,16 @@ const PatientOnboarding = () => {
                 </>
               )}
             </button>
+          </div>
+
+          {/* Already have account link */}
+          <div className="mt-6 text-center">
+            <p className="text-sm text-gray-600">
+              Already have an account?{' '}
+              <Link to="/login" className="text-primary-600 hover:text-primary-700 font-medium">
+                Sign in here
+              </Link>
+            </p>
           </div>
         </div>
       </div>

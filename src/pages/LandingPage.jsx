@@ -48,12 +48,20 @@ const LandingPage = () => {
           <div className="flex items-center">
             <img src={logo} alt="CuraLink Logo" className="h-12" />
           </div>
-          <button
-            onClick={() => navigate('/director-management')}
-            className="text-sm text-gray-600 hover:text-primary-600 transition-colors font-medium"
-          >
-            Director Portal
-          </button>
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => navigate('/login')}
+              className="text-sm text-gray-600 hover:text-primary-600 transition-colors font-medium"
+            >
+              Sign In
+            </button>
+            <button
+              onClick={() => navigate('/director-management')}
+              className="text-sm bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors font-medium"
+            >
+              Director Portal
+            </button>
+          </div>
         </div>
       </nav>
 
