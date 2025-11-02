@@ -252,9 +252,9 @@ const LandingPage = () => {
   const navigate = useNavigate();
   const [theme, setTheme] = useState(() => {
     if (typeof window !== "undefined") {
-      return localStorage.getItem("curalink-theme") || "dark";
+      return localStorage.getItem("curalink-theme") || "light";
     }
-    return "dark";
+    return "light";
   });
 
   const isDark = theme === "dark";
@@ -360,7 +360,7 @@ const LandingPage = () => {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3 text-sm font-medium">
-              <button
+              {/* <button
                 onClick={() => navigate("/patient/onboarding")}
                 className={clsx(
                   "rounded-full border px-5 py-2 transition-all duration-300",
@@ -386,7 +386,7 @@ const LandingPage = () => {
                 )}
               >
                 Director Portal
-              </button>
+              </button> */}
               <button
                 onClick={() => navigate("/login")}
                 className={clsx(
