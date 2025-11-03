@@ -339,7 +339,7 @@ const LandingPage = () => {
                 src={theme == "dark" ? logo_1 : logo}
                 alt="CuraLink Logo"
                 className={clsx(
-                  "h-15 w-32 rounded-xl border p-2",
+                  "h-16  rounded-xl border p-2",
                   isDark
                     ? "border-white/20 bg-white/10"
                     : "border-slate-200 bg-white"

@@ -172,7 +172,7 @@ const Login = () => {
         <img
           src={logo}
           alt=""
-          className="absolute -left-20 top-1/4 h-72 w-72 rounded-full border border-transparent blur-3xl"
+          className="absolute -left-20 top-1/4 h-32 w-32 rounded-full border border-transparent blur-3xl"
           aria-hidden
         />
       </div>

@@ -137,7 +137,7 @@ const PatientOnboarding = () => {
       <div className="container mx-auto px-6 py-8">
         {/* Header */}
         <div className="flex items-center mb-8">
-          <img src={logo} alt="CuraLink Logo" className="h-10" />
+          <img src={logo} alt="CuraLink Logo" className="h-20" />
         </div>
 
         {/* Progress Bar */}

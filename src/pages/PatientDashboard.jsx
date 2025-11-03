@@ -2,14 +2,16 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom';
 import {
   Heart, Users, BookOpen, FileText, MessageCircle, Star,
-  Search, Filter, Calendar, MapPin, LogOut, User, X
+  Search, Calendar, MapPin, LogOut, User, X, ExternalLink
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
 import aiService from '../services/aiService';
 import expertService from '../services/expertService';
+import clinicalTrialService from '../services/clinicalTrialService';
 import api from '../services/api';
 import { useForumData } from '../hooks/useForumData';
+import ChatWidget from '../components/ChatWidget';
 
 const PatientDashboard = () => {
   const navigate = useNavigate();
@@ -32,6 +34,15 @@ const PatientDashboard = () => {
   const [expertSearch, setExpertSearch] = useState('');
   const [followedExpertIds, setFollowedExpertIds] = useState([]);
   const searchDebounceRef = useRef(null);
+  const [clinicalTrials, setClinicalTrials] = useState([]);
+  const [trialsLoading, setTrialsLoading] = useState(false);
+  const [trialsError, setTrialsError] = useState(null);
+  const [trialFilters, setTrialFilters] = useState({ phase: 'all', location: 'all' });
+  const [trialSearch, setTrialSearch] = useState('');
+  const trialSearchDebounceRef = useRef(null);
+  const trialSearchRef = useRef('');
+  const loadClinicalTrialsRef = useRef(() => {});
+  const [selectedTrial, setSelectedTrial] = useState(null);
   const [isMeetingModalOpen, setIsMeetingModalOpen] = useState(false);
   const [selectedExpert, setSelectedExpert] = useState(null);
   const [meetingForm, setMeetingForm] = useState({
@@ -42,6 +53,9 @@ const PatientDashboard = () => {
   });
   const [meetingSubmitting, setMeetingSubmitting] = useState(false);
   const [meetingFeedback, setMeetingFeedback] = useState(null);
+  const [meetingRequests, setMeetingRequests] = useState([]);
+  const [meetingRequestsLoading, setMeetingRequestsLoading] = useState(false);
+  const [meetingRequestsError, setMeetingRequestsError] = useState(null);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -162,21 +176,298 @@ const PatientDashboard = () => {
     setSelectedQuestion(null);
   };
 
-  const handleAskFormChange = (field) => (event) => {
-    setAskForm((prev) => ({
-      ...prev,
-      [field]: event.target.value,
-    }));
-  };
+const handleAskFormChange = (field) => (event) => {
+  setAskForm((prev) => ({
+    ...prev,
+    [field]: event.target.value,
+  }));
+};
 
-  const formatDate = (isoString) => {
-    const date = new Date(isoString);
-    return date.toLocaleDateString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-  };
+const formatDate = (isoString) => {
+  const date = new Date(isoString);
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+};
+
+const handleTrialFilterChange = (field) => (event) => {
+  const value = event.target.value;
+  setTrialFilters((prev) => ({
+    ...prev,
+    [field]: value,
+  }));
+};
+
+const handleTrialSearchChange = (event) => {
+  const value = event.target.value;
+  setTrialSearch(value);
+  trialSearchRef.current = value.trim();
+};
+
+const getTrialStatusStyles = (status) => {
+  const normalized = (status || '').toLowerCase();
+  if (normalized.includes('recruit') || normalized.includes('enroll')) {
+    return 'bg-green-100 text-green-700';
+  }
+  if (normalized.includes('complete') || normalized.includes('closed')) {
+    return 'bg-gray-100 text-gray-700';
+  }
+  if (normalized.includes('suspend') || normalized.includes('pause')) {
+    return 'bg-yellow-100 text-yellow-700';
+  }
+  return 'bg-primary-100 text-primary-700';
+};
+
+const openTrialDetails = (trial) => {
+  setSelectedTrial(trial);
+};
+
+const closeTrialDetails = () => {
+  setSelectedTrial(null);
+};
+
+const loadClinicalTrials = useCallback(
+  async (overrideSearch) => {
+    if (!userProfile) return;
+    setTrialsLoading(true);
+    setTrialsError(null);
+    try {
+      const params = {
+        limit: 40,
+      };
+
+      if (trialFilters.phase !== 'all') {
+        params.phase = trialFilters.phase;
+      }
+
+      if (trialFilters.location === 'remote') {
+        params.remote = true;
+      } else if (trialFilters.location === 'near') {
+        params.remote = false;
+        if (userProfile?.city) params.city = userProfile.city;
+        if (userProfile?.country) params.country = userProfile.country;
+      }
+
+      if (userProfile?.condition && userProfile.condition !== 'Not specified') {
+        params.condition = userProfile.condition;
+      }
+
+      const searchTerm =
+        typeof overrideSearch === 'string' ? overrideSearch.trim() : trialSearchRef.current;
+      if (searchTerm) {
+        params.search = searchTerm;
+      }
+
+      const { trials } = await clinicalTrialService.fetchClinicalTrials(params);
+      setClinicalTrials(trials || []);
+    } catch (error) {
+      console.error('Failed to load clinical trials:', error);
+      setTrialsError('Unable to load clinical trials right now. Please try again.');
+    } finally {
+      setTrialsLoading(false);
+    }
+  },
+  [userProfile, trialFilters]
+);
+
+useEffect(() => {
+  loadClinicalTrialsRef.current = loadClinicalTrials;
+}, [loadClinicalTrials]);
+
+const handleFollowToggle = async (expert) => {
+  if (!expert || expert.source !== 'platform' || !expert.id) {
+    setExpertsError('Following is only available for CuraLink researchers.');
+    return;
+  }
+
+  const isFollowed = followedExpertIds.includes(expert.id);
+
+  try {
+    setExpertsError(null);
+    if (isFollowed) {
+      await api.delete(`/patients/favorites/experts/${expert.id}`);
+      setFollowedExpertIds((prev) => prev.filter((id) => id !== expert.id));
+      setUserProfile((prev) => {
+        if (!prev) return prev;
+        const favorites = new Set(prev.favorites || []);
+        favorites.delete(expert.id);
+        return { ...prev, favorites: Array.from(favorites) };
+      });
+    } else {
+      await api.post(`/patients/favorites/experts/${expert.id}`);
+      setFollowedExpertIds((prev) => (prev.includes(expert.id) ? prev : [...prev, expert.id]));
+      setUserProfile((prev) => {
+        if (!prev) return prev;
+        const favorites = new Set(prev.favorites || []);
+        favorites.add(expert.id);
+        return { ...prev, favorites: Array.from(favorites) };
+      });
+    }
+  } catch (error) {
+    console.error('Failed to toggle follow:', error);
+    setExpertsError('Unable to update follow status right now. Please try again.');
+  }
+};
+
+const openMeetingModal = (expert) => {
+  setSelectedExpert(expert);
+  setMeetingFeedback(null);
+  setMeetingForm({
+    name: userProfile?.name || '',
+    email: userProfile?.email || '',
+    contact: '',
+    notes: '',
+  });
+  setIsMeetingModalOpen(true);
+};
+
+const closeMeetingModal = () => {
+  setIsMeetingModalOpen(false);
+  setSelectedExpert(null);
+};
+
+const handleMeetingFormChange = (field) => (event) => {
+  const value = event.target.value;
+  setMeetingForm((prev) => ({
+    ...prev,
+    [field]: value,
+  }));
+};
+
+const handleMeetingSubmit = async (event) => {
+  event.preventDefault();
+  if (!selectedExpert) {
+    setMeetingFeedback({ type: 'error', message: 'Select an expert before requesting a meeting.' });
+    return;
+  }
+
+  if (!meetingForm.contact.trim()) {
+    setMeetingFeedback({ type: 'error', message: 'Please provide your contact details so the expert can reach you.' });
+    return;
+  }
+
+  setMeetingSubmitting(true);
+  setMeetingFeedback(null);
+
+  try {
+    const payload = {
+      researcherId: selectedExpert.source === 'platform' ? selectedExpert.id : null,
+      researcherName: selectedExpert.name,
+      researcherEmail: selectedExpert.email,
+      patientName: meetingForm.name || userProfile?.name,
+      patientEmail: meetingForm.email || userProfile?.email,
+      patientContact: meetingForm.contact,
+      patientNotes: meetingForm.notes,
+    };
+
+    const result = await expertService.requestMeeting(payload);
+    if (result.emailError) {
+      setMeetingFeedback({
+        type: 'warning',
+        message: 'Request saved, but we could not notify the expert automatically. Our team will follow up.',
+      });
+    } else {
+      setMeetingFeedback({
+        type: 'success',
+        message: 'Your meeting request was sent successfully. We will notify you once the expert responds.',
+      });
+    }
+    setMeetingForm((prev) => ({ ...prev, contact: '', notes: '' }));
+    await loadMeetingRequests();
+  } catch (error) {
+    console.error('Failed to submit meeting request:', error);
+    const message =
+      error?.response?.data?.message ||
+      'Unable to submit the meeting request right now. Please try again later.';
+    setMeetingFeedback({ type: 'error', message });
+  } finally {
+    setMeetingSubmitting(false);
+  }
+};
+
+  const loadExperts = useCallback(
+    async (term = '') => {
+      if (!userProfile) return;
+      setExpertsLoading(true);
+      setExpertsError(null);
+      try {
+        const conditionFilter =
+          userProfile.condition && userProfile.condition !== 'Not specified'
+            ? userProfile.condition
+            : undefined;
+
+        const { experts: fetchedExperts } = await expertService.fetchExperts({
+          search: term,
+          condition: conditionFilter,
+        });
+        setExperts(fetchedExperts || []);
+      } catch (error) {
+        console.error('Failed to load experts:', error);
+        setExpertsError('Unable to load experts right now. Please try again.');
+      } finally {
+        setExpertsLoading(false);
+      }
+    },
+    [userProfile]
+  );
+
+  const loadMeetingRequests = useCallback(async () => {
+    if (!userProfile) return;
+    setMeetingRequestsLoading(true);
+    setMeetingRequestsError(null);
+    try {
+      const { requests } = await expertService.fetchPatientMeetingRequests();
+      setMeetingRequests(requests || []);
+    } catch (error) {
+      console.error('Failed to load meeting requests:', error);
+      setMeetingRequestsError('Unable to load meeting requests right now. Please try again.');
+    } finally {
+      setMeetingRequestsLoading(false);
+    }
+  }, [userProfile]);
+
+  useEffect(() => {
+    if (!userProfile) return;
+    loadExperts('');
+    loadMeetingRequests();
+  }, [userProfile, loadExperts, loadMeetingRequests]);
+
+  useEffect(() => {
+    if (!userProfile) return;
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+    searchDebounceRef.current = setTimeout(() => {
+      loadExperts(expertSearch);
+    }, 400);
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+      }
+    };
+  }, [expertSearch, userProfile, loadExperts]);
+
+  useEffect(() => {
+    if (!userProfile) return;
+    loadClinicalTrials(trialSearchRef.current);
+  }, [userProfile, trialFilters, loadClinicalTrials]);
+
+  useEffect(() => {
+    if (!userProfile) return;
+    if (trialSearchDebounceRef.current) {
+      clearTimeout(trialSearchDebounceRef.current);
+    }
+    trialSearchDebounceRef.current = setTimeout(() => {
+      loadClinicalTrialsRef.current(trialSearchRef.current);
+    }, 400);
+    return () => {
+      if (trialSearchDebounceRef.current) {
+        clearTimeout(trialSearchDebounceRef.current);
+      }
+    };
+  }, [trialSearch, userProfile]);
 
   const sidebarItems = [
     { id: 'overview', label: 'Overview', icon: <Heart /> },
@@ -185,18 +476,6 @@ const PatientDashboard = () => {
     { id: 'publications', label: 'Publications', icon: <BookOpen /> },
     { id: 'forums', label: 'Forums', icon: <MessageCircle /> },
     { id: 'favorites', label: 'My Favorites', icon: <Star /> },
-  ];
-
-  const mockExperts = [
-    { id: 1, name: 'Dr. Sarah Johnson', specialty: 'Oncology', location: 'Boston, MA', rating: 4.9 },
-    { id: 2, name: 'Dr. Michael Chen', specialty: 'Neurology', location: 'San Francisco, CA', rating: 4.8 },
-    { id: 3, name: 'Dr. Emily Williams', specialty: 'Immunology', location: 'New York, NY', rating: 4.9 },
-  ];
-
-  const mockTrials = [
-    { id: 1, title: 'Phase III Trial for Advanced Lung Cancer', status: 'Recruiting', location: 'Multiple Locations' },
-    { id: 2, title: 'Immunotherapy Study for Brain Cancer', status: 'Recruiting', location: 'Boston, MA' },
-    { id: 3, title: 'Gene Therapy Clinical Trial', status: 'Enrolling Soon', location: 'San Diego, CA' },
   ];
 
   const mockPublications = [
@@ -250,91 +529,349 @@ const PatientDashboard = () => {
 
       case 'experts':
         return (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold">Health Experts</h2>
-              <div className="flex items-center space-x-2">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                  <input
-                    type="text"
-                    placeholder="Search experts..."
-                    className="pl-10 pr-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  />
-                </div>
-                <button className="p-2 border rounded-lg hover:bg-gray-50">
-                  <Filter className="w-4 h-4" />
-                </button>
+          <div className="space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-bold">Health Experts</h2>
+                <p className="text-sm text-gray-500">
+                  Specialists curated for your needs
+                  {userProfile?.condition ? ` (${userProfile.condition})` : ''}
+                </p>
+              </div>
+              <div className="relative w-full md:w-72">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  type="text"
+                  value={expertSearch}
+                  onChange={(event) => setExpertSearch(event.target.value)}
+                  placeholder="Search experts by name, specialty, or institution..."
+                  className="pl-10 pr-4 py-2 border rounded-lg text-sm w-full focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
               </div>
             </div>
 
-            {mockExperts.map(expert => (
-              <div key={expert.id} className="card flex items-center justify-between">
-                <div className="flex items-center space-x-4">
-                  <div className="w-12 h-12 bg-primary-100 rounded-full flex items-center justify-center">
-                    <User className="w-6 h-6 text-primary-600" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold">{expert.name}</h3>
-                    <p className="text-sm text-gray-600">{expert.specialty}</p>
-                    <div className="flex items-center text-xs text-gray-500 mt-1">
-                      <MapPin className="w-3 h-3 mr-1" />
-                      {expert.location}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <button className="btn-secondary text-sm px-4 py-2">Follow</button>
-                  <button className="btn-primary text-sm px-4 py-2">Request Meeting</button>
-                </div>
+            {expertsError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                {expertsError}
               </div>
-            ))}
+            )}
+
+            {expertsLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((skeleton) => (
+                  <div key={skeleton} className="card animate-pulse h-24" />
+                ))}
+              </div>
+            ) : experts.length === 0 ? (
+              <div className="card text-center py-10">
+                <p className="text-sm text-gray-500">
+                  No experts matched your search. Try a different keyword or broaden your filters.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {experts.map((expert) => {
+                  const isFollowed = expert.id && followedExpertIds.includes(expert.id);
+                  return (
+                    <div
+                      key={expert.id || expert.name}
+                      className="card flex flex-col md:flex-row md:items-center md:justify-between gap-4"
+                    >
+                      <div className="flex items-start gap-4">
+                        <div className="w-12 h-12 bg-primary-100 rounded-full flex items-center justify-center shrink-0">
+                          <User className="w-6 h-6 text-primary-600" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-semibold text-lg">{expert.name}</h3>
+                            {expert.source === 'external' && (
+                              <span className="text-xs rounded-full bg-gray-100 text-gray-600 px-2 py-0.5">
+                                External
+                              </span>
+                            )}
+                            {expert.availableForMeetings ? (
+                              <span className="text-xs rounded-full bg-green-100 text-green-600 px-2 py-0.5">
+                                Accepting meetings
+                              </span>
+                            ) : (
+                              <span className="text-xs rounded-full bg-yellow-100 text-yellow-600 px-2 py-0.5">
+                                Admin follow-up
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-500">
+                            {expert.specialties && expert.specialties.length > 0
+                              ? expert.specialties.join(', ')
+                              : expert.researchInterests || 'Specialty not listed'}
+                          </p>
+                          <div className="flex items-center space-x-2 text-sm text-gray-500 mt-1">
+                            <MapPin className="w-4 h-4" />
+                            <span>{expert.location || expert.institution || 'Location not specified'}</span>
+                          </div>
+                          {expert.researchInterests && (
+                            <p className="text-sm text-gray-500 mt-2">
+                              <span className="font-medium text-gray-700">Research focus:</span>{' '}
+                              {expert.researchInterests}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => handleFollowToggle(expert)}
+                          disabled={expert.source !== 'platform'}
+                          className={`px-4 py-2 rounded-full text-sm font-semibold transition ${
+                            isFollowed
+                              ? 'bg-primary-100 text-primary-700 hover:bg-primary-200'
+                              : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
+                          } ${expert.source !== 'platform' ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        >
+                          {isFollowed ? 'Following' : 'Follow'}
+                        </button>
+                        <button
+                          onClick={() => openMeetingModal(expert)}
+                          className="btn-primary px-4 py-2 rounded-full text-sm font-semibold"
+                        >
+                          Request Meeting
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <h3 className="text-lg font-semibold text-gray-900">Meeting Requests</h3>
+              {meetingRequestsError && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                  {meetingRequestsError}
+                </div>
+              )}
+              {meetingRequestsLoading ? (
+                <div className="space-y-3">
+                  {[1, 2].map((item) => (
+                    <div key={item} className="card h-20 animate-pulse" />
+                  ))}
+                </div>
+              ) : meetingRequests.length === 0 ? (
+                <div className="card text-sm text-gray-500 py-6 text-center">
+                  You haven’t requested any meetings yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {meetingRequests.map((request) => (
+                    <div key={request.id} className="card text-sm text-gray-600">
+                      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                        <div>
+                          <p className="text-base font-semibold text-gray-900">{request.researcher_name}</p>
+                          <p className="text-xs text-gray-500">
+                            Requested on {formatDate(request.created_at)}
+                          </p>
+                          {request.scheduled_at && (
+                            <p className="text-sm text-gray-600 mt-1">
+                              Scheduled for{' '}
+                              {new Date(request.scheduled_at).toLocaleString(undefined, {
+                                month: 'short',
+                                day: 'numeric',
+                                year: 'numeric',
+                                hour: 'numeric',
+                                minute: '2-digit',
+                              })}
+                            </p>
+                          )}
+                          {request.response_notes && (
+                            <p className="text-sm text-gray-600 mt-1">
+                              Notes: {request.response_notes}
+                            </p>
+                          )}
+                        </div>
+                        <span
+                          className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
+                            request.status === 'accepted'
+                              ? 'bg-green-100 text-green-700'
+                              : request.status === 'completed'
+                              ? 'bg-blue-100 text-blue-700'
+                              : request.status === 'rejected'
+                              ? 'bg-red-100 text-red-600'
+                              : 'bg-yellow-100 text-yellow-700'
+                          }`}
+                        >
+                          {request.status.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         );
 
       case 'trials':
         return (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold">Clinical Trials</h2>
-              <div className="flex items-center space-x-2">
-                <select className="px-3 py-2 border rounded-lg text-sm">
-                  <option>All Phases</option>
-                  <option>Phase I</option>
-                  <option>Phase II</option>
-                  <option>Phase III</option>
+          <div className="space-y-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold">Clinical Trials</h2>
+                <p className="text-sm text-gray-500">
+                  Curated studies for {userProfile?.condition && userProfile.condition !== 'Not specified'
+                    ? userProfile.condition
+                    : 'your interests'}
+                </p>
+              </div>
+              <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+                <div className="relative w-full sm:w-64">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="text"
+                    value={trialSearch}
+                    onChange={handleTrialSearchChange}
+                    placeholder="Search trials by title or condition..."
+                    className="w-full rounded-lg border px-10 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  />
+                </div>
+                <select
+                  value={trialFilters.phase}
+                  onChange={handleTrialFilterChange('phase')}
+                  className="w-full rounded-lg border px-3 py-2 text-sm sm:w-auto"
+                >
+                  <option value="all">All Phases</option>
+                  <option value="Phase I">Phase I</option>
+                  <option value="Phase II">Phase II</option>
+                  <option value="Phase III">Phase III</option>
+                  <option value="Phase IV">Phase IV</option>
                 </select>
-                <select className="px-3 py-2 border rounded-lg text-sm">
-                  <option>All Locations</option>
-                  <option>Near Me</option>
-                  <option>Remote</option>
+                <select
+                  value={trialFilters.location}
+                  onChange={handleTrialFilterChange('location')}
+                  className="w-full rounded-lg border px-3 py-2 text-sm sm:w-auto"
+                >
+                  <option value="all">All Locations</option>
+                  <option value="near">Near Me</option>
+                  <option value="remote">Remote Friendly</option>
                 </select>
               </div>
             </div>
 
-            {mockTrials.map(trial => (
-              <div key={trial.id} className="card">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h3 className="font-semibold text-lg">{trial.title}</h3>
-                    <div className="flex items-center space-x-4 mt-2">
-                      <span className={`px-2 py-1 text-xs rounded-full ${
-                        trial.status === 'Recruiting'
-                          ? 'bg-green-100 text-green-700'
-                          : 'bg-yellow-100 text-yellow-700'
-                      }`}>
-                        {trial.status}
-                      </span>
-                      <div className="flex items-center text-sm text-gray-600">
-                        <MapPin className="w-3 h-3 mr-1" />
-                        {trial.location}
+            {trialFilters.location === 'near' && !userProfile?.city && !userProfile?.country && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                Add your city or country in your profile to surface trials near you.
+              </div>
+            )}
+
+            {trialsError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                {trialsError}
+              </div>
+            )}
+
+            {trialsLoading ? (
+              <div className="space-y-4">
+                {[1, 2, 3].map((skeleton) => (
+                  <div key={skeleton} className="card animate-pulse space-y-4">
+                    <div className="h-4 w-3/4 rounded bg-slate-200" />
+                    <div className="h-3 w-1/2 rounded bg-slate-200" />
+                    <div className="h-24 w-full rounded bg-slate-100" />
+                  </div>
+                ))}
+              </div>
+            ) : clinicalTrials.length === 0 ? (
+              <div className="card py-12 text-center">
+                <p className="text-sm text-gray-500">
+                  No trials matched your filters. Adjust your search or check back soon for new opportunities.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {clinicalTrials.map((trial) => {
+                  const statusStyles = getTrialStatusStyles(trial.status);
+                  const locationLabel = trial.isRemote
+                    ? 'Remote Friendly'
+                    : trial.location ||
+                      [trial.city, trial.country].filter(Boolean).join(', ') ||
+                      'Location not specified';
+                  return (
+                    <div key={trial.id} className="card p-6">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex-1">
+                          <div className="mb-3 flex flex-wrap items-center gap-2">
+                            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyles}`}>
+                              {trial.status || 'Status unknown'}
+                            </span>
+                            {trial.phase && (
+                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+                                {trial.phase}
+                              </span>
+                            )}
+                            {trial.isRemote && (
+                              <span className="rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-700">
+                                Remote
+                              </span>
+                            )}
+                          </div>
+                          <h3 className="text-lg font-semibold text-gray-900">{trial.title}</h3>
+                          <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-gray-600">
+                            {trial.condition && <span>Condition: {trial.condition}</span>}
+                            {trial.sponsor && (
+                              <>
+                                <span className="text-gray-300" aria-hidden="true">
+                                  &bull;
+                                </span>
+                                <span>Sponsor: {trial.sponsor}</span>
+                              </>
+                            )}
+                          </div>
+                          {trial.summary && (
+                            <p className="mt-3 text-sm text-gray-600 line-clamp-2">{trial.summary}</p>
+                          )}
+                          {Array.isArray(trial.tags) && trial.tags.length > 0 && (
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              {trial.tags.slice(0, 4).map((tag) => (
+                                <span
+                                  key={`${trial.id}-${tag}`}
+                                  className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600"
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 flex-col items-start gap-3 sm:items-end">
+                          <div className="flex items-center text-sm text-gray-600">
+                            <MapPin className="mr-2 h-4 w-4 text-primary-500" />
+                            {locationLabel}
+                          </div>
+                          {trial.startDate && (
+                            <div className="flex items-center text-sm text-gray-600">
+                              <Calendar className="mr-2 h-4 w-4 text-primary-500" />
+                              Starts {formatDate(trial.startDate)}
+                            </div>
+                          )}
+                          <button
+                            onClick={() => openTrialDetails(trial)}
+                            className="btn-primary rounded-full px-5 py-2 text-sm font-semibold"
+                          >
+                            View Details
+                          </button>
+                          {trial.signupUrl && (
+                            <a
+                              href={trial.signupUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                            >
+                              Apply Online <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <button className="btn-primary text-sm px-4 py-2">View Details</button>
-                </div>
+                  );
+                })}
               </div>
-            ))}
+            )}
           </div>
         );
 
@@ -504,7 +1041,7 @@ const PatientDashboard = () => {
           <div className="p-6 border-b">
             <div className="flex items-center mb-4">
               
-              <img src={logo} alt="CuraLink" className="h-8" />
+              <img src={logo} alt="CuraLink" className="h-16" />
             </div>
             <div className="bg-primary-50 rounded-lg p-3">
               <p className="text-sm font-medium text-gray-900">{userProfile?.name}</p>
@@ -626,6 +1163,285 @@ const PatientDashboard = () => {
         </div>
       )}
 
+      {selectedTrial && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm">
+          <div className="relative max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-8 shadow-2xl">
+            <button
+              onClick={closeTrialDetails}
+              className="absolute right-5 top-5 text-gray-400 transition hover:text-gray-600"
+              aria-label="Close trial details"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-2xl font-semibold text-gray-900">{selectedTrial.title}</h3>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${getTrialStatusStyles(
+                      selectedTrial.status
+                    )}`}
+                  >
+                    {selectedTrial.status || 'Status unknown'}
+                  </span>
+                  {selectedTrial.phase && (
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+                      {selectedTrial.phase}
+                    </span>
+                  )}
+                  {selectedTrial.isRemote && (
+                    <span className="rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-700">
+                      Remote
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {selectedTrial.summary && (
+                <p className="leading-relaxed text-gray-700">{selectedTrial.summary}</p>
+              )}
+
+              <div className="grid gap-4 text-sm text-gray-700 md:grid-cols-2">
+                <div className="space-y-2">
+                  <p>
+                    <span className="font-semibold text-gray-900">Condition: </span>
+                    {selectedTrial.condition || 'Not specified'}
+                  </p>
+                  <p>
+                    <span className="font-semibold text-gray-900">Sponsor: </span>
+                    {selectedTrial.sponsor || 'Not specified'}
+                  </p>
+                  <p>
+                    <span className="font-semibold text-gray-900">Location: </span>
+                    {selectedTrial.isRemote
+                      ? 'Remote Friendly'
+                      : selectedTrial.location ||
+                        [selectedTrial.city, selectedTrial.country].filter(Boolean).join(', ') ||
+                        'Not specified'}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  {selectedTrial.startDate && (
+                    <p>
+                      <span className="font-semibold text-gray-900">Starts: </span>
+                      {formatDate(selectedTrial.startDate)}
+                    </p>
+                  )}
+                  {selectedTrial.endDate && (
+                    <p>
+                      <span className="font-semibold text-gray-900">Ends: </span>
+                      {formatDate(selectedTrial.endDate)}
+                    </p>
+                  )}
+                  {selectedTrial.enrollmentTarget && (
+                    <p>
+                      <span className="font-semibold text-gray-900">Enrollment Target: </span>
+                      {selectedTrial.enrollmentTarget}
+                    </p>
+                  )}
+                  {selectedTrial.enrollmentCurrent && (
+                    <p>
+                      <span className="font-semibold text-gray-900">Currently Enrolled: </span>
+                      {selectedTrial.enrollmentCurrent}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {selectedTrial.eligibility && (
+                <div>
+                  <h4 className="mb-2 text-sm font-semibold text-gray-900">Eligibility</h4>
+                  <p className="whitespace-pre-line text-sm text-gray-600">
+                    {selectedTrial.eligibility}
+                  </p>
+                </div>
+              )}
+
+              {Array.isArray(selectedTrial.tags) && selectedTrial.tags.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-sm font-semibold text-gray-900">Keywords</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedTrial.tags.map((tag) => (
+                      <span
+                        key={`${selectedTrial.id}-tag-${tag}`}
+                        className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-4 text-sm text-gray-700">
+                {selectedTrial.contactEmail && (
+                  <span>
+                    Contact{' '}
+                    <a
+                      href={`mailto:${selectedTrial.contactEmail}`}
+                      className="font-semibold text-primary-600 hover:underline"
+                    >
+                      {selectedTrial.contactEmail}
+                    </a>
+                  </span>
+                )}
+                {selectedTrial.contactPhone && (
+                  <span>
+                    Phone{' '}
+                    <a
+                      href={`tel:${selectedTrial.contactPhone}`}
+                      className="font-semibold text-primary-600 hover:underline"
+                    >
+                      {selectedTrial.contactPhone}
+                    </a>
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={closeTrialDetails}
+                  className="rounded-full border border-gray-200 px-5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50"
+                >
+                  Close
+                </button>
+                {selectedTrial.signupUrl && (
+                  <a
+                    href={selectedTrial.signupUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn-primary inline-flex items-center gap-2 rounded-full px-5 py-2 text-sm font-semibold"
+                  >
+                    Visit Trial Site <ExternalLink className="h-4 w-4" />
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isMeetingModalOpen && selectedExpert && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-xl w-full p-8 relative">
+            <button
+              onClick={closeMeetingModal}
+              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
+              aria-label="Close meeting request"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-2xl font-semibold text-gray-900">Request a Meeting</h3>
+                <p className="text-sm text-gray-500">
+                  We'll forward your request to {selectedExpert.name}. If they are not active on CuraLink yet, our team
+                  will reach out to them on your behalf.
+                </p>
+              </div>
+
+              <div className="bg-gray-50 border rounded-2xl p-4 text-sm text-gray-700">
+                <p className="font-semibold text-gray-900">{selectedExpert.name}</p>
+                <p className="text-gray-600">
+                  {selectedExpert.specialties && selectedExpert.specialties.length > 0
+                    ? selectedExpert.specialties.join(', ')
+                    : selectedExpert.researchInterests || 'Specialty not listed'}
+                </p>
+                <div className="flex items-center space-x-2 text-gray-500 mt-2">
+                  <MapPin className="w-4 h-4" />
+                  <span>{selectedExpert.location || selectedExpert.institution || 'Location not specified'}</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Meeting status:{' '}
+                  {selectedExpert.availableForMeetings
+                    ? 'This expert is open to meeting requests.'
+                    : 'We will coordinate with our concierge team to reach this expert.'}
+                </p>
+              </div>
+
+              <form onSubmit={handleMeetingSubmit} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">Your Name</label>
+                    <input
+                      type="text"
+                      value={meetingForm.name}
+                      onChange={handleMeetingFormChange('name')}
+                      placeholder="Enter your name"
+                      className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">Email</label>
+                    <input
+                      type="email"
+                      value={meetingForm.email}
+                      onChange={handleMeetingFormChange('email')}
+                      placeholder="Enter your email (optional)"
+                      className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Contact Number</label>
+                  <input
+                    type="text"
+                    value={meetingForm.contact}
+                    onChange={handleMeetingFormChange('contact')}
+                    placeholder="How can the expert reach you?"
+                    className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Notes for the expert</label>
+                  <textarea
+                    value={meetingForm.notes}
+                    onChange={handleMeetingFormChange('notes')}
+                    placeholder="Share your goals for the meeting or any background info..."
+                    rows={4}
+                    className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
+                  />
+                </div>
+
+                {meetingFeedback && (
+                  <div
+                    className={`rounded-xl px-4 py-3 text-sm ${
+                      meetingFeedback.type === 'success'
+                        ? 'bg-green-50 text-green-700 border border-green-200'
+                        : meetingFeedback.type === 'warning'
+                        ? 'bg-yellow-50 text-yellow-700 border border-yellow-200'
+                        : 'bg-red-50 text-red-600 border border-red-200'
+                    }`}
+                  >
+                    {meetingFeedback.message}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={closeMeetingModal}
+                    className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={meetingSubmitting}
+                    className="btn-primary px-6 py-2 rounded-full text-sm font-semibold disabled:opacity-60"
+                  >
+                    {meetingSubmitting ? 'Sending...' : 'Send Request'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedQuestion && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
           <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full p-8 relative">
@@ -699,6 +1515,7 @@ const PatientDashboard = () => {
           </div>
         </div>
       )}
+      <ChatWidget role="patient" />
     </>
   );
 };

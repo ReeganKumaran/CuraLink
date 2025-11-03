@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Heart,
@@ -6,21 +6,83 @@ import {
   FileText,
   MessageCircle,
   Star,
-  Plus,
   Search,
   Filter,
-  Calendar,
-  LogOut,
-  User,
   TrendingUp,
-  X,
-  ArrowRight,
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
+import expertService from '../services/expertService';
 import aiService from '../services/aiService';
 import { useForumData } from '../hooks/useForumData';
 import useCommunityChat from '../hooks/useCommunityChat';
+import ChatWidget from '../components/ChatWidget';
+import clinicalTrialService from '../services/clinicalTrialService';
+import ResearcherSidebar from '../components/researcher/Sidebar';
+import ResearcherHeader from '../components/researcher/Header';
+import ResearcherOverviewSection from '../components/researcher/OverviewSection';
+import ResearcherTrialsSection from '../components/researcher/TrialsSection';
+import ResearcherCollaboratorsSection from '../components/researcher/CollaboratorsSection';
+import ResearcherForumsSection from '../components/researcher/ForumsSection';
+import ResearcherPublicationsSection from '../components/researcher/PublicationsSection';
+import ResearcherFavoritesSection from '../components/researcher/FavoritesSection';
+import CommunityChatModal from '../components/researcher/CommunityChatModal';
+import CommunityModal from '../components/researcher/CommunityModal';
+import AskQuestionModal from '../components/researcher/AskQuestionModal';
+import ReplyModal from '../components/researcher/ReplyModal';
+import TrialModal from '../components/researcher/TrialModal';
+import TrialDetailsModal from '../components/researcher/TrialDetailsModal';
+import ScheduleMeetingModal from '../components/researcher/ScheduleMeetingModal';
+import DiscussionModal from '../components/researcher/DiscussionModal';
+
+const buildGeneratedTrialSummary = (form) => {
+  const { title, phase, sponsor, condition, location, city, country } = form;
+  const hasMeaningfulInfo = Boolean(title || condition || sponsor || location || city || country);
+  if (!hasMeaningfulInfo) {
+    return '';
+  }
+
+  const titleText = title ? `The study "${title}"` : 'This study';
+  const phaseText = phase ? `${phase} clinical trial` : 'clinical trial';
+  const sponsorText = sponsor ? ` sponsored by ${sponsor}` : '';
+  const conditionText = condition ? ` focusing on ${condition}` : '';
+  const locationParts = [location, city, country].filter(Boolean);
+  const locationText = locationParts.length
+    ? ` The research activities will take place at ${locationParts.join(', ')}.`
+    : ' The research team will coordinate activities directly with enrolled participants.';
+
+  const summary = `${titleText} is a ${phaseText}${sponsorText}${conditionText}. It aims to evaluate safety and outcomes for participants.${locationText}`;
+  return summary.trim();
+};
+
+const buildGeneratedTrialEligibility = (form) => {
+  const { condition, location, city, country, isRemote, sponsor } = form;
+  if (!condition && !location && !city && !country && !isRemote && !sponsor) {
+    return '';
+  }
+
+  const conditionText = condition
+    ? `Ideal participants include individuals diagnosed with ${condition}.`
+    : "Ideal participants include individuals who meet the study's clinical criteria.";
+
+  const locationParts = [location, city, country].filter(Boolean);
+  let logisticsText;
+  if (isRemote) {
+    logisticsText =
+      'The study supports remote or hybrid participation, allowing virtual visits when appropriate.';
+  } else if (locationParts.length) {
+    logisticsText = `Participants should be able to attend study visits in ${locationParts.join(', ')}.`;
+  } else {
+    logisticsText = 'Study visit logistics will be outlined during the screening conversation.';
+  }
+
+  const screeningText = sponsor
+    ? `All candidates will complete a screening with the ${sponsor} research team to confirm eligibility.`
+    : 'All candidates will complete a screening with the research team to confirm eligibility.';
+
+  const eligibility = `${conditionText} ${logisticsText} ${screeningText}`;
+  return eligibility.trim();
+};
 
 const ResearcherDashboard = () => {
   const navigate = useNavigate();
@@ -69,6 +131,143 @@ const ResearcherDashboard = () => {
     name: '',
     description: '',
   });
+  const [collaborators, setCollaborators] = useState([]);
+  const [collaboratorsLoading, setCollaboratorsLoading] = useState(false);
+  const [collaboratorsError, setCollaboratorsError] = useState(null);
+  const [trials, setTrials] = useState([]);
+  const [trialsLoading, setTrialsLoading] = useState(false);
+  const [trialsError, setTrialsError] = useState(null);
+  const [isTrialModalOpen, setIsTrialModalOpen] = useState(false);
+  const [selectedTrial, setSelectedTrial] = useState(null);
+  const [trialSubmitting, setTrialSubmitting] = useState(false);
+  const [trialSubmitError, setTrialSubmitError] = useState(null);
+  const [trialForm, setTrialForm] = useState({
+    title: '',
+    phase: 'Phase I',
+    status: 'Recruiting',
+    condition: '',
+    summary: '',
+    sponsor: '',
+    location: '',
+    city: '',
+    country: '',
+    isRemote: false,
+    enrollmentTarget: '',
+    enrollmentCurrent: '',
+    startDate: '',
+    endDate: '',
+    eligibility: '',
+    tags: '',
+    signupUrl: '',
+    contactName: '',
+    contactEmail: '',
+    contactPhone: '',
+  });
+  const [summaryTouched, setSummaryTouched] = useState(false);
+  const [eligibilityTouched, setEligibilityTouched] = useState(false);
+  const [meetingRequests, setMeetingRequests] = useState([]);
+  const [meetingRequestsLoading, setMeetingRequestsLoading] = useState(false);
+  const [meetingRequestsError, setMeetingRequestsError] = useState(null);
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [selectedMeetingRequest, setSelectedMeetingRequest] = useState(null);
+  const [scheduleForm, setScheduleForm] = useState({ date: '', time: '', notes: '' });
+  const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
+
+  const trialPhases = useMemo(
+    () => ['Phase I', 'Phase II', 'Phase III', 'Phase IV', 'Observational'],
+    []
+  );
+  const trialStatuses = useMemo(
+    () => ['Recruiting', 'Active', 'Completed', 'Suspended', 'Not Yet Recruiting'],
+    []
+  );
+
+const handleTrialFormChange = (field) => (event) => {
+  const value =
+    field === 'isRemote' ? event.target.checked : event.target.value;
+  if (field === 'summary') {
+    setSummaryTouched(true);
+  } else if (field === 'eligibility') {
+    setEligibilityTouched(true);
+  }
+  setTrialForm((prev) => ({
+    ...prev,
+    [field]: value,
+  }));
+};
+
+const resetTrialForm = useCallback(() => {
+  setTrialForm({
+    title: '',
+    phase: 'Phase I',
+    status: 'Recruiting',
+      condition: '',
+      summary: '',
+      sponsor: '',
+      location: '',
+      city: '',
+      country: '',
+      isRemote: false,
+      enrollmentTarget: '',
+      enrollmentCurrent: '',
+      startDate: '',
+      endDate: '',
+      eligibility: '',
+      tags: '',
+      signupUrl: '',
+    contactName: '',
+    contactEmail: '',
+    contactPhone: '',
+  });
+  setTrialSubmitError(null);
+  setSummaryTouched(false);
+  setEligibilityTouched(false);
+}, []);
+
+  const openTrialModal = () => {
+    resetTrialForm();
+    setIsTrialModalOpen(true);
+  };
+
+  const closeTrialModal = () => {
+    setIsTrialModalOpen(false);
+  };
+
+  const openTrialDetails = (trial) => {
+    setSelectedTrial(trial);
+  };
+
+  const closeTrialDetails = () => {
+    setSelectedTrial(null);
+  };
+
+  const handleOpenCommunityModal = useCallback(() => {
+    setCommunitySubmitError(null);
+    setIsCommunityModalOpen(true);
+  }, []);
+
+  const closeCommunityModal = useCallback(() => {
+    setIsCommunityModalOpen(false);
+  }, []);
+
+  const closeReplyModal = useCallback(() => {
+    setIsReplyModalOpen(false);
+    setReplyTargetId(null);
+    setReplyForm({ message: '' });
+    setReplyAIError(null);
+    setReplyAIProcessing(false);
+  }, []);
+
+  const closeDiscussionModal = useCallback(() => {
+    setDiscussionQuestionId(null);
+  }, []);
+
+  const handleCommunityFormChange = useCallback((field, value) => {
+    setCommunityForm((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+  }, []);
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -87,6 +286,7 @@ const ResearcherDashboard = () => {
         }
 
         setUserProfile({
+          id: userData.user.id,
           name: userData.user.name,
           email: userData.user.email,
           institution: userData.profile?.institution || 'Not specified',
@@ -122,6 +322,116 @@ const ResearcherDashboard = () => {
     }
   }, [isReplyModalOpen]);
 
+  const loadCollaborators = useCallback(async () => {
+    if (!userProfile) return;
+    setCollaboratorsLoading(true);
+    setCollaboratorsError(null);
+    try {
+      const { experts } = await expertService.fetchExperts({ search: '', condition: '' });
+
+      // Remove duplicates by id and filter out current user
+      const uniqueExperts = Array.from(
+        new Map((experts || []).map(expert => [expert.id, expert])).values()
+      );
+      const filtered = uniqueExperts.filter((expert) => expert.id !== userProfile.id);
+
+      setCollaborators(filtered);
+    } catch (error) {
+      console.error('Failed to load collaborators:', error);
+      setCollaboratorsError('Unable to load collaborators right now. Please try again later.');
+    } finally {
+      setCollaboratorsLoading(false);
+    }
+  }, [userProfile]);
+
+  const loadMeetingRequests = useCallback(async () => {
+    if (!userProfile) return;
+    setMeetingRequestsLoading(true);
+    setMeetingRequestsError(null);
+    try {
+      const { requests } = await expertService.fetchResearcherMeetingRequests();
+      setMeetingRequests(requests || []);
+    } catch (error) {
+      console.error('Failed to load meeting requests:', error);
+      setMeetingRequestsError('Unable to load meeting requests right now. Please try again.');
+    } finally {
+      setMeetingRequestsLoading(false);
+    }
+  }, [userProfile]);
+
+  const openScheduleModal = (request) => {
+    setSelectedMeetingRequest(request);
+    setScheduleForm({
+      date: request?.scheduled_at ? new Date(request.scheduled_at).toISOString().slice(0, 10) : '',
+      time: request?.scheduled_at ? new Date(request.scheduled_at).toISOString().slice(11, 16) : '',
+      notes: request?.response_notes || '',
+    });
+    setIsScheduleModalOpen(true);
+    setScheduleSubmitting(false);
+  };
+
+  const closeScheduleModal = () => {
+    setIsScheduleModalOpen(false);
+    setSelectedMeetingRequest(null);
+  };
+
+  const handleScheduleFormChange = (field) => (event) => {
+    const value = event.target.value;
+    setScheduleForm((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+  };
+
+  const handleScheduleSubmit = async (event) => {
+    event.preventDefault();
+    if (!selectedMeetingRequest) return;
+
+    if (!scheduleForm.date || !scheduleForm.time) {
+      return;
+    }
+
+    const scheduledAt = new Date(`${scheduleForm.date}T${scheduleForm.time}`);
+    if (Number.isNaN(scheduledAt.getTime())) {
+      return;
+    }
+
+    setScheduleSubmitting(true);
+    try {
+      await expertService.updateMeetingRequest(selectedMeetingRequest.id, {
+        status: 'accepted',
+        scheduledAt: scheduledAt.toISOString(),
+        responseNotes: scheduleForm.notes,
+      });
+      await loadMeetingRequests();
+      closeScheduleModal();
+    } catch (error) {
+      console.error('Failed to schedule meeting:', error);
+    } finally {
+      setScheduleSubmitting(false);
+    }
+  };
+
+  const handleMeetingStatusChange = async (request, status, notes = '') => {
+    if (!request) return;
+    try {
+      await expertService.updateMeetingRequest(request.id, {
+        status,
+        responseNotes: notes,
+      });
+      await loadMeetingRequests();
+    } catch (error) {
+      console.error('Failed to update meeting request status:', error);
+    }
+  };
+
+  useEffect(() => {
+    if (userProfile) {
+      loadCollaborators();
+      loadMeetingRequests();
+    }
+  }, [userProfile, loadCollaborators, loadMeetingRequests]);
+
   const discussionQuestion = useMemo(
     () => (discussionQuestionId ? questions.find((q) => q.id === discussionQuestionId) || null : null),
     [questions, discussionQuestionId]
@@ -142,6 +452,128 @@ const ResearcherDashboard = () => {
     []
   );
 
+  const loadTrials = useCallback(async () => {
+    if (!userProfile?.id) return;
+    setTrialsLoading(true);
+    setTrialsError(null);
+    try {
+      const { trials: fetchedTrials } = await clinicalTrialService.fetchClinicalTrials({
+        createdBy: userProfile.id,
+        limit: 100,
+      });
+      setTrials(fetchedTrials || []);
+    } catch (error) {
+      console.error('Failed to load clinical trials:', error);
+      setTrialsError('Unable to load your clinical trials right now. Please try again.');
+    } finally {
+      setTrialsLoading(false);
+    }
+  }, [userProfile]);
+
+  useEffect(() => {
+    if (!userProfile?.id) return;
+    loadTrials();
+  }, [userProfile, loadTrials]);
+
+  const handleCreateTrial = async (event) => {
+    event.preventDefault();
+    if (!trialForm.title.trim()) {
+      setTrialSubmitError('Provide a title for the clinical trial.');
+      return;
+    }
+
+    setTrialSubmitting(true);
+    setTrialSubmitError(null);
+    try {
+      const parseNumber = (value) => {
+        if (value === null || value === undefined) return undefined;
+        const trimmed = String(value).trim();
+        if (trimmed === '') return undefined;
+        const parsed = Number(trimmed);
+        return Number.isFinite(parsed) ? parsed : undefined;
+      };
+
+      const tagsArray = trialForm.tags
+        ? trialForm.tags
+            .split(',')
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+        : [];
+
+      const payload = {
+        title: trialForm.title.trim(),
+        phase: trialForm.phase,
+        status: trialForm.status,
+        condition: trialForm.condition.trim() || undefined,
+        summary: trialForm.summary.trim() || undefined,
+        sponsor: trialForm.sponsor.trim() || undefined,
+        location: trialForm.location.trim() || undefined,
+        city: trialForm.city.trim() || undefined,
+        country: trialForm.country.trim() || undefined,
+        isRemote: Boolean(trialForm.isRemote),
+        enrollmentTarget: parseNumber(trialForm.enrollmentTarget),
+        enrollmentCurrent: parseNumber(trialForm.enrollmentCurrent),
+        startDate: trialForm.startDate || undefined,
+        endDate: trialForm.endDate || undefined,
+        eligibility: trialForm.eligibility.trim() || undefined,
+        tags: tagsArray,
+        signupUrl: trialForm.signupUrl.trim() || undefined,
+        contactName: trialForm.contactName.trim() || undefined,
+        contactEmail: trialForm.contactEmail.trim() || undefined,
+        contactPhone: trialForm.contactPhone.trim() || undefined,
+      };
+
+      const { trial } = await clinicalTrialService.createClinicalTrial(payload);
+      if (trial) {
+        setTrials((prev) => [trial, ...prev]);
+      }
+      resetTrialForm();
+      setIsTrialModalOpen(false);
+    } catch (error) {
+      console.error('Failed to create clinical trial:', error);
+      const message =
+        error?.response?.data?.message || 'Unable to create the clinical trial. Please try again.';
+      setTrialSubmitError(message);
+  } finally {
+    setTrialSubmitting(false);
+  }
+};
+
+  useEffect(() => {
+    if (summaryTouched) return;
+    const generated = buildGeneratedTrialSummary(trialForm);
+    if (generated && generated !== trialForm.summary) {
+      setTrialForm((prev) => ({ ...prev, summary: generated }));
+    }
+  }, [
+    summaryTouched,
+    trialForm.title,
+    trialForm.condition,
+    trialForm.phase,
+    trialForm.sponsor,
+    trialForm.location,
+    trialForm.city,
+    trialForm.country,
+  ]);
+
+  useEffect(() => {
+    if (eligibilityTouched) return;
+    const generated = buildGeneratedTrialEligibility(trialForm);
+    if (generated && generated !== trialForm.eligibility) {
+      setTrialForm((prev) => ({ ...prev, eligibility: generated }));
+    }
+  }, [
+    eligibilityTouched,
+    trialForm.title,
+    trialForm.condition,
+    trialForm.phase,
+    trialForm.sponsor,
+    trialForm.location,
+    trialForm.city,
+    trialForm.country,
+    trialForm.isRemote,
+  ]);
+
   const sidebarItems = [
     { id: 'overview', label: 'Overview', icon: <Heart className="w-4 h-4" /> },
     { id: 'trials', label: 'My Clinical Trials', icon: <FileText className="w-4 h-4" /> },
@@ -151,56 +583,34 @@ const ResearcherDashboard = () => {
     { id: 'favorites', label: 'Favorites', icon: <Star className="w-4 h-4" /> },
   ];
 
-  const mockTrials = [
-    {
-      id: 1,
-      title: 'Phase II Trial for Novel Cancer Treatment',
-      phase: 'Phase II',
-      participants: 45,
-      target: 100,
-      status: 'Recruiting',
-    },
-    {
-      id: 2,
-      title: 'Immunotherapy Combination Study',
-      phase: 'Phase III',
-      participants: 120,
-      target: 150,
-      status: 'Recruiting',
-    },
-    {
-      id: 3,
-      title: 'Gene Therapy Safety Study',
-      phase: 'Phase I',
-      participants: 12,
-      target: 30,
-      status: 'Active',
-    },
-  ];
+  const trialStats = useMemo(() => {
+    if (!Array.isArray(trials) || trials.length === 0) {
+      return {
+        total: 0,
+        recruiting: 0,
+        enrollmentCurrent: 0,
+        enrollmentTarget: 0,
+      };
+    }
 
-  const mockCollaborators = [
-    {
-      id: 1,
-      name: 'Dr. Lisa Anderson',
-      institution: 'Johns Hopkins',
-      specialty: 'Oncology',
-      publications: 142,
-    },
-    {
-      id: 2,
-      name: 'Dr. Robert Kim',
-      institution: 'Stanford Medical',
-      specialty: 'Immunology',
-      publications: 98,
-    },
-    {
-      id: 3,
-      name: 'Dr. Maria Garcia',
-      institution: 'Mayo Clinic',
-      specialty: 'Genetics',
-      publications: 176,
-    },
-  ];
+    return trials.reduce(
+      (acc, trial) => {
+        const status = (trial.status || '').toLowerCase();
+        const current = Number(trial.enrollmentCurrent) || 0;
+        const target = Number(trial.enrollmentTarget) || 0;
+
+        if (status.includes('recruit')) {
+          acc.recruiting += 1;
+        }
+
+        acc.enrollmentCurrent += current;
+        acc.enrollmentTarget += target;
+        acc.total += 1;
+        return acc;
+      },
+      { total: 0, recruiting: 0, enrollmentCurrent: 0, enrollmentTarget: 0 }
+    );
+  }, [trials]);
 
   const mockPublications = [
     {
@@ -349,7 +759,7 @@ const ResearcherDashboard = () => {
       await openCommunityChat(created.id);
 
       setCommunityForm({ name: '', description: '' });
-      setIsCommunityModalOpen(false);
+      closeCommunityModal();
     } catch (error) {
       console.error('Failed to create community', error);
       setCommunitySubmitError(
@@ -434,329 +844,62 @@ const ResearcherDashboard = () => {
     switch (activeTab) {
       case 'overview':
         return (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="card">
-                <h3 className="text-sm font-medium text-gray-600 mb-1">Active Trials</h3>
-                <p className="text-3xl font-bold text-primary-600">3</p>
-                <p className="text-xs text-gray-500 mt-1">2 recruiting</p>
-              </div>
-              <div className="card">
-                <h3 className="text-sm font-medium text-gray-600 mb-1">Total Participants</h3>
-                <p className="text-3xl font-bold text-primary-600">177</p>
-                <p className="text-xs text-gray-500 mt-1">+12 this month</p>
-              </div>
-              <div className="card">
-                <h3 className="text-sm font-medium text-gray-600 mb-1">Forum Questions</h3>
-                <p className="text-3xl font-bold text-primary-600">{questions.length}</p>
-                <p className="text-xs text-gray-500 mt-1">Awaiting reply</p>
-              </div>
-              <div className="card">
-                <h3 className="text-sm font-medium text-gray-600 mb-1">Collaborators</h3>
-                <p className="text-3xl font-bold text-primary-600">24</p>
-                <p className="text-xs text-gray-500 mt-1">3 new requests</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="card">
-                <h3 className="text-xl font-semibold mb-4">Trial Progress</h3>
-                {mockTrials.slice(0, 2).map((trial) => (
-                  <div key={trial.id} className="mb-4 last:mb-0">
-                    <div className="flex justify-between items-start mb-2">
-                      <h4 className="text-sm font-medium text-gray-700">{trial.title}</h4>
-                      <span className="text-xs text-gray-500">{trial.phase}</span>
-                    </div>
-                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-primary-500"
-                        style={{ width: `${Math.round((trial.participants / trial.target) * 100)}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-xs text-gray-500 mt-2">
-                      <span>{trial.participants} enrolled</span>
-                      <span>Target: {trial.target}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="card">
-                <h3 className="text-xl font-semibold mb-4">Upcoming Meetings</h3>
-                <div className="space-y-4">
-                  {[1, 2, 3].map((item) => (
-                    <div key={item} className="flex items-center justify-between">
-                      <div>
-                        <h4 className="text-sm font-medium text-gray-700">Patient Consultation</h4>
-                        <p className="text-xs text-gray-500">Discuss eligibility for trial #23A</p>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        <div className="flex items-center text-xs text-gray-500">
-                          <Calendar className="w-3 h-3 mr-1" />
-                          Apr 18, 10:30 AM
-                        </div>
-                        <button className="btn-secondary text-xs px-3 py-1.5">Details</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
+          <ResearcherOverviewSection
+            trialStats={trialStats}
+            questions={questions}
+            collaborators={collaborators}
+            trials={trials}
+          />
         );
-
       case 'trials':
         return (
-          <div className="card">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
-              <div>
-                <h3 className="text-xl font-semibold text-gray-900">Trial Portfolio</h3>
-                <p className="text-sm text-gray-500">Monitor enrollment and milestones</p>
-              </div>
-              <button className="btn-primary inline-flex items-center gap-2 px-4 py-2">
-                <Plus className="w-4 h-4" />
-                <span>New Trial</span>
-              </button>
-            </div>
-            <div className="space-y-4">
-              {mockTrials.map((trial) => (
-                <div key={trial.id} className="border rounded-2xl p-4 hover:border-primary-200 transition">
-                  <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-                    <div>
-                      <h4 className="text-lg font-semibold text-gray-900">{trial.title}</h4>
-                      <div className="flex items-center flex-wrap gap-2 text-sm text-gray-500 mt-2">
-                        <span>{trial.phase}</span>
-                        <span className="text-gray-300" aria-hidden="true">
-                          &bull;
-                        </span>
-                        <span>Status: {trial.status}</span>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm text-gray-500">Participants</p>
-                      <p className="text-lg font-semibold text-gray-900">
-                        {trial.participants} / {trial.target}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <ResearcherTrialsSection
+            trials={trials}
+            trialsError={trialsError}
+            trialsLoading={trialsLoading}
+            onCreateTrial={openTrialModal}
+            onOpenDetails={openTrialDetails}
+          />
         );
-
       case 'collaborators':
         return (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {mockCollaborators.map((collaborator) => (
-              <div key={collaborator.id} className="card">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="bg-primary-100 text-primary-700 rounded-full w-10 h-10 flex items-center justify-center font-semibold">
-                        {collaborator.name
-                          .split(' ')
-                          .map((segment) => segment[0])
-                          .join('')
-                          .slice(0, 2)}
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-semibold text-gray-900">{collaborator.name}</h3>
-                        <p className="text-sm text-gray-500">{collaborator.institution}</p>
-                      </div>
-                    </div>
-                    <p className="text-sm text-gray-600">
-                      <span className="font-medium text-gray-800">Specialty:</span> {collaborator.specialty}
-                    </p>
-                    <p className="text-sm text-gray-600 mt-1">
-                      <span className="font-medium text-gray-800">Publications:</span> {collaborator.publications}
-                    </p>
-                  </div>
-                  <button className="btn-secondary text-sm px-4 py-2">Connect</button>
-                </div>
-              </div>
-            ))}
-          </div>
+          <ResearcherCollaboratorsSection
+            meetingRequests={meetingRequests}
+            meetingRequestsLoading={meetingRequestsLoading}
+            meetingRequestsError={meetingRequestsError}
+            onRefreshMeetingRequests={loadMeetingRequests}
+            onOpenScheduleModal={openScheduleModal}
+            onUpdateMeetingStatus={handleMeetingStatusChange}
+            formatDate={formatDate}
+            formatDateTime={formatDateTime}
+            collaborators={collaborators}
+            collaboratorsLoading={collaboratorsLoading}
+            collaboratorsError={collaboratorsError}
+            onRefreshCollaborators={loadCollaborators}
+          />
         );
-
       case 'forums':
         return (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 xl:grid-cols-[2fr,1fr] gap-6">
-              <div className="space-y-6">
-                <div className="card">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-xl font-semibold text-gray-900">Pending Questions</h3>
-                    <span className="text-sm text-gray-500">
-                      {pendingQuestions.length} awaiting response
-                    </span>
-                  </div>
-                  {pendingQuestions.length === 0 ? (
-                    <p className="text-sm text-gray-500">You are all caught up.</p>
-                  ) : (
-                    <div className="space-y-4">
-                      {pendingQuestions.map((question) =>
-                        renderForumQuestionCard(question, { showReply: true })
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div className="card">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-xl font-semibold text-gray-900">Latest Discussions</h3>
-                    <button
-                      onClick={() => setIsAskModalOpen(true)}
-                      className="btn-secondary text-sm px-4 py-2"
-                    >
-                      Ask Question
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    {questions.map((question) =>
-                      renderForumQuestionCard(question, { showReply: true })
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-6">
-                <div className="card">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900">Communities</h3>
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`flex items-center gap-2 text-xs font-medium ${
-                          socketConnected ? 'text-green-600' : 'text-gray-400'
-                        }`}
-                      >
-                        <span
-                          className={`w-2.5 h-2.5 rounded-full ${
-                            socketConnected ? 'bg-green-500' : 'bg-gray-400'
-                          }`}
-                        />
-                        {socketConnected ? 'Live' : 'Offline'}
-                      </span>
-                      <button
-                        onClick={() => {
-                          setCommunitySubmitError(null);
-                          setIsCommunityModalOpen(true);
-                        }}
-                        className="btn-primary text-sm px-4 py-2"
-                      >
-                        Create
-                      </button>
-                    </div>
-                  </div>
-                  {communitiesError && (
-                    <p className="text-sm text-red-500 mb-2">
-                      Unable to load communities right now. Please refresh.
-                    </p>
-                  )}
-                  {chatError && (
-                    <p className="text-sm text-red-500 mb-2">{chatError}</p>
-                  )}
-                  {socketError && (
-                    <p className="text-sm text-red-500 mb-2">{socketError}</p>
-                  )}
-                  <div className="space-y-4">
-                    {communitiesLoading ? (
-                      <p className="text-sm text-gray-500">Loading communities...</p>
-                    ) : communityList.length === 0 ? (
-                      <p className="text-sm text-gray-500">
-                        No communities yet. Start one to gather experts.
-                      </p>
-                    ) : (
-                      communityList.map((community) => (
-                        <div key={community.id} className="border rounded-2xl p-4">
-                          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-                            <div>
-                              <h4 className="text-sm font-semibold text-gray-900">{community.name}</h4>
-                              <p className="text-xs text-gray-500 mt-1">
-                                Created by {community.creatorName || 'Researcher'} on{' '}
-                                {formatDate(community.createdAt)}
-                              </p>
-                              {community.description ? (
-                                <p className="text-sm text-gray-600 mt-2">{community.description}</p>
-                              ) : (
-                                <p className="text-sm text-gray-500 mt-2">
-                                  No description yet. Open the chat to introduce the topic.
-                                </p>
-                              )}
-                            </div>
-                            <div className="flex items-end sm:items-center sm:flex-col gap-2">
-                              <span
-                                className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
-                                  community.isMember
-                                    ? 'bg-primary-50 text-primary-700'
-                                    : 'bg-gray-100 text-gray-600'
-                                }`}
-                              >
-                                {community.isMember ? 'You are a member' : 'Not joined'}
-                              </span>
-                              <button
-                                onClick={() => handleOpenChat(community.id)}
-                                className="btn-secondary text-xs px-3 py-1.5"
-                              >
-                                {community.isMember ? 'Open Chat' : 'Join Chat'}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <ResearcherForumsSection
+            pendingQuestions={pendingQuestions}
+            questions={questions}
+            renderQuestionCard={renderForumQuestionCard}
+            onAskQuestion={() => setIsAskModalOpen(true)}
+            communityList={communityList}
+            communitiesLoading={communitiesLoading}
+            communitiesError={communitiesError}
+            socketConnected={socketConnected}
+            socketError={socketError}
+            chatError={chatError}
+            formatDate={formatDate}
+            onCreateCommunity={handleOpenCommunityModal}
+            onOpenChat={handleOpenChat}
+          />
         );
-
       case 'publications':
-        return (
-          <div className="card">
-            <h3 className="text-xl font-semibold text-gray-900 mb-4">Recent Publications</h3>
-            <div className="space-y-4">
-              {mockPublications.map((publication) => (
-                <div key={publication.id} className="border rounded-2xl p-4">
-                  <h4 className="text-lg font-semibold text-gray-900">{publication.title}</h4>
-                  <p className="text-sm text-gray-500 mt-1">
-                    {publication.journal} &bull; {publication.year}
-                  </p>
-                  <div className="flex items-center justify-end mt-4">
-                    <button className="btn-secondary text-sm px-4 py-2">View Details</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-
+        return <ResearcherPublicationsSection publications={mockPublications} />;
       case 'favorites':
-        return (
-          <div className="card">
-            <h3 className="text-xl font-semibold text-gray-900 mb-4">Saved Items</h3>
-            <div className="space-y-3">
-              {favoriteItems.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between rounded-xl border px-4 py-3 text-sm text-gray-600"
-                >
-                  <div>
-                    <p className="font-medium text-gray-900">{item.label}</p>
-                    <p className="text-xs text-gray-500">
-                      {item.type} &bull; {item.note}
-                    </p>
-                  </div>
-                  <button className="text-primary-600 hover:text-primary-700 text-sm font-medium">
-                    Open
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-
+        return <ResearcherFavoritesSection items={favoriteItems} />;
       default:
         return null;
     }
@@ -773,104 +916,25 @@ const ResearcherDashboard = () => {
     );
   }
 
+  const content = renderContent();
+
   return (
     <>
       <div className="min-h-screen bg-gray-50 flex">
-        <aside className="w-72 bg-white shadow-lg">
-          <div className="p-6 border-b">
-            <div className="flex items-center justify-between">
-              <img src={logo} alt="CuraLink" className="h-8" />
-              <button
-                onClick={handleLogout}
-                className="text-gray-400 hover:text-primary-600 transition"
-                aria-label="Sign out"
-              >
-                <LogOut className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="mt-6 space-y-4">
-              <div className="bg-primary-50 rounded-xl p-4">
-                <div className="flex items-center gap-3">
-                  <div className="bg-white rounded-full w-10 h-10 flex items-center justify-center shadow-sm">
-                    <User className="w-5 h-5 text-primary-600" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-gray-900">{userProfile.name}</p>
-                    <p className="text-xs text-gray-500">{userProfile.institution}</p>
-                  </div>
-                </div>
-                <div className="mt-4 space-y-2 text-xs text-gray-600">
-                  <p>
-                    <span className="font-medium text-gray-800">Email:</span> {userProfile.email}
-                  </p>
-                  <p>
-                    <span className="font-medium text-gray-800">Specialties:</span>{' '}
-                    {userProfile.specialties}
-                  </p>
-                  {userProfile.orcid && (
-                    <p>
-                      <span className="font-medium text-gray-800">ORCID:</span> {userProfile.orcid}
-                    </p>
-                  )}
-                  {userProfile.researchGate && (
-                    <p>
-                      <span className="font-medium text-gray-800">ResearchGate:</span>{' '}
-                      {userProfile.researchGate}
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <nav className="p-4 space-y-1">
-            {sidebarItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition ${
-                  activeTab === item.id
-                    ? 'bg-primary-100 text-primary-700'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                {item.icon}
-                <span className="font-medium text-sm">{item.label}</span>
-              </button>
-            ))}
-          </nav>
-        </aside>
-
+        <ResearcherSidebar
+          logoSrc={logo}
+          userProfile={userProfile}
+          sidebarItems={sidebarItems}
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          onLogout={handleLogout}
+        />
         <main className="flex-1 py-8 px-6 lg:px-10 space-y-6">
-          <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-            <div>
-              <h1 className="text-2xl font-semibold text-gray-900">
-                Welcome back, {userProfile.name.split(' ')[0]}
-              </h1>
-              <p className="text-sm text-gray-500">
-                Track studies, engage with patients, and grow your communities.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                onClick={() => setIsAskModalOpen(true)}
-                className="btn-secondary inline-flex items-center gap-2 px-4 py-2"
-              >
-                <MessageCircle className="w-4 h-4" />
-                <span>Ask Question</span>
-              </button>
-              <button
-                onClick={() => setIsCommunityModalOpen(true)}
-                className="btn-primary inline-flex items-center gap-2 px-4 py-2"
-              >
-                <Plus className="w-4 h-4" />
-                <span>New Community</span>
-              </button>
-            </div>
-          </header>
-
+          <ResearcherHeader
+            userProfile={userProfile}
+            onAskQuestion={() => setIsAskModalOpen(true)}
+            onCreateCommunity={handleOpenCommunityModal}
+          />
           <div className="card">
             <div className="flex flex-col md:flex-row md:items-center gap-4">
               <div className="relative flex-1">
@@ -887,400 +951,94 @@ const ResearcherDashboard = () => {
               </button>
             </div>
           </div>
-
-          {renderContent()}
+          {content}
         </main>
       </div>
 
-      {isAskModalOpen && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full p-8 relative">
-            <button
-              onClick={() => setIsAskModalOpen(false)}
-              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
-              aria-label="Close ask question modal"
-            >
-              <X className="w-5 h-5" />
-            </button>
-            <div className="space-y-6">
-              <div>
-                <h3 className="text-2xl font-semibold text-gray-900">Ask the Community</h3>
-                <p className="text-sm text-gray-500">
-                  Share clinical insights or invite patients to contribute.
-                </p>
-              </div>
-              <form onSubmit={handleAskSubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Category</label>
-                  <select
-                    value={askForm.category}
-                    onChange={handleAskFormChange('category')}
-                    className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  >
-                    {categories.map((category) => (
-                      <option key={category}>{category}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Title</label>
-                  <input
-                    type="text"
-                    value={askForm.title}
-                    onChange={handleAskFormChange('title')}
-                    placeholder="What would you like to ask?"
-                    className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Question</label>
-                  <textarea
-                    value={askForm.question}
-                    onChange={handleAskFormChange('question')}
-                    placeholder="Provide context, goals, or supporting details..."
-                    rows={6}
-                    className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
-                    required
-                  />
-                </div>
-                <div className="flex items-center justify-end gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsAskModalOpen(false)}
-                    className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
-                  >
-                    Cancel
-                  </button>
-                  <button type="submit" className="btn-primary px-6 py-2 rounded-full text-sm font-semibold">
-                    Post Question
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
+      <AskQuestionModal
+        isOpen={isAskModalOpen}
+        categories={categories}
+        askForm={askForm}
+        onChange={handleAskFormChange}
+        onClose={() => setIsAskModalOpen(false)}
+        onSubmit={handleAskSubmit}
+      />
 
-      {isReplyModalOpen && replyTarget && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-xl w-full p-8 relative">
-            <button
-              onClick={() => {
-                setIsReplyModalOpen(false);
-                setReplyTargetId(null);
-                setReplyForm({ message: '' });
-                setReplyAIError(null);
-                setReplyAIProcessing(false);
-              }}
-              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
-              aria-label="Close reply modal"
-            >
-              <X className="w-5 h-5" />
-            </button>
-            <div className="space-y-6">
-              <div>
-                <h3 className="text-2xl font-semibold text-gray-900">Reply to Question</h3>
-                <p className="text-sm text-gray-500">
-                  Provide evidence-based guidance from your researcher perspective.
-                </p>
-              </div>
-              <div className="bg-gray-50 rounded-2xl p-4">
-                <p className="text-sm font-medium text-gray-900">{replyTarget.title}</p>
-                <p className="text-xs text-gray-500 mt-1">{replyTarget.question}</p>
-              </div>
-              <form onSubmit={handleReplySubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm font-medium text-gray-700">Your Response</label>
-                    <button
-                      type="button"
-                      onClick={handleReplyAI}
-                      disabled={replyAIProcessing}
-                      className="text-sm font-medium text-primary-600 hover:text-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {replyAIProcessing ? 'Generating…' : 'AI Assist'}
-                    </button>
-                  </div>
-                  <textarea
-                    value={replyForm.message}
-                    onChange={(event) => setReplyForm({ message: event.target.value })}
-                    rows={6}
-                    placeholder="Compose a detailed answer with actionable next steps..."
-                    className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
-                    required
-                  />
-                  {replyAIError && <p className="text-sm text-red-500">{replyAIError}</p>}
-                </div>
-                <div className="flex items-center justify-end gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsReplyModalOpen(false);
-                      setReplyTargetId(null);
-                      setReplyForm({ message: '' });
-                      setReplyAIError(null);
-                      setReplyAIProcessing(false);
-                    }}
-                    className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
-                  >
-                    Cancel
-                  </button>
-                  <button type="submit" className="btn-primary px-6 py-2 rounded-full text-sm font-semibold">
-                    Post Reply
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
+      <ReplyModal
+        isOpen={isReplyModalOpen}
+        question={replyTarget}
+        replyForm={replyForm}
+        onChangeReply={(value) => setReplyForm({ message: value })}
+        onClose={closeReplyModal}
+        onSubmit={handleReplySubmit}
+        onAiAssist={handleReplyAI}
+        aiProcessing={replyAIProcessing}
+        aiError={replyAIError}
+      />
 
-      {isCommunityModalOpen && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-xl w-full p-8 relative">
-            <button
-              onClick={() => setIsCommunityModalOpen(false)}
-              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
-              aria-label="Close community modal"
-            >
-              <X className="w-5 h-5" />
-            </button>
-            <div className="space-y-6">
-              <div>
-                <h3 className="text-2xl font-semibold text-gray-900">Create a Research Community</h3>
-                <p className="text-sm text-gray-500">
-                  Bring together experts and patients around a focused topic.
-                </p>
-              </div>
-              <form onSubmit={handleCommunitySubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Community Name</label>
-                  <input
-                    type="text"
-                    value={communityForm.name}
-                    onChange={(event) =>
-                      setCommunityForm((prev) => ({ ...prev, name: event.target.value }))
-                    }
-                    placeholder="Example: Glioblastoma Insights"
-                    className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Description</label>
-                  <textarea
-                    value={communityForm.description}
-                    onChange={(event) =>
-                      setCommunityForm((prev) => ({ ...prev, description: event.target.value }))
-                    }
-                    rows={5}
-                    placeholder="Outline the community purpose, audience, and plans..."
-                    className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
-                    required
-                  />
-                </div>
-                {communitySubmitError && (
-                  <p className="text-sm text-red-500">{communitySubmitError}</p>
-                )}
-                <div className="flex items-center justify-end gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsCommunityModalOpen(false)}
-                    className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="btn-primary px-6 py-2 rounded-full text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                    disabled={communitySubmitting}
-                  >
-                    {communitySubmitting ? 'Creating...' : 'Create Community'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
+      <CommunityModal
+        isOpen={isCommunityModalOpen}
+        communityForm={communityForm}
+        onChange={handleCommunityFormChange}
+        onClose={closeCommunityModal}
+        onSubmit={handleCommunitySubmit}
+        submitting={communitySubmitting}
+        error={communitySubmitError}
+      />
 
-      {isChatOpen && activeCommunity && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-3xl w-full p-8 relative">
-            <button
-              onClick={handleCloseChat}
-              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
-              aria-label="Close community chat"
-            >
-              <X className="w-5 h-5" />
-            </button>
-            <div className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-                <div>
-                  <h3 className="text-2xl font-semibold text-gray-900">{activeCommunity.name}</h3>
-                  {activeCommunity.description && (
-                    <p className="text-sm text-gray-600 mt-2">{activeCommunity.description}</p>
-                  )}
-                  {!activeCommunity.description && (
-                    <p className="text-sm text-gray-500 mt-2">
-                      Start the conversation with a welcome note or research update.
-                    </p>
-                  )}
-                </div>
-                <div
-                  className={`flex items-center gap-2 text-sm ${
-                    socketConnected ? 'text-green-600' : 'text-gray-400'
-                  }`}
-                >
-                  <span
-                    className={`w-2.5 h-2.5 rounded-full ${
-                      socketConnected ? 'bg-green-500' : 'bg-gray-400'
-                    }`}
-                  />
-                  {socketConnected ? 'Live connection' : 'Connecting...'}
-                </div>
-              </div>
+      <CommunityChatModal
+        isOpen={isChatOpen}
+        community={activeCommunity}
+        messages={activeMessages}
+        socketConnected={socketConnected}
+        socketError={socketError}
+        chatError={chatError}
+        formatDateTime={formatDateTime}
+        chatMessage={chatMessage}
+        onChangeMessage={setChatMessage}
+        onClose={handleCloseChat}
+        onSendMessage={handleSendChat}
+        messagesEndRef={messagesEndRef}
+      />
 
-              <div className="bg-gray-50 rounded-2xl border max-h-80 overflow-y-auto p-4 space-y-4">
-                {activeMessages.length === 0 ? (
-                  <p className="text-sm text-gray-500">No messages yet. Be the first to share.</p>
-                ) : (
-                  activeMessages.map((message) => (
-                    <div key={message.id} className="bg-white rounded-xl border p-3 shadow-sm">
-                      <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-                        <span className="font-medium text-gray-800">{message.senderName}</span>
-                        <span>{formatDateTime(message.createdAt)}</span>
-                      </div>
-                      <p className="text-sm text-gray-700 whitespace-pre-wrap">{message.message}</p>
-                    </div>
-                  ))
-                )}
-                <div ref={messagesEndRef} />
-              </div>
+      <TrialModal
+        isOpen={isTrialModalOpen}
+        trialForm={trialForm}
+        onChange={handleTrialFormChange}
+        trialPhases={trialPhases}
+        trialStatuses={trialStatuses}
+        onSubmit={handleCreateTrial}
+        onClose={closeTrialModal}
+        trialSubmitError={trialSubmitError}
+        trialSubmitting={trialSubmitting}
+      />
 
-              <form onSubmit={handleSendChat} className="space-y-3">
-                {socketError && (
-                  <p className="text-sm text-red-500">{socketError}</p>
-                )}
-                <textarea
-                  value={chatMessage}
-                  onChange={(event) => setChatMessage(event.target.value)}
-                  rows={3}
-                  placeholder={
-                    socketConnected
-                      ? 'Share an update, ask for insights, or welcome new members...'
-                      : 'Connecting to chat...'
-                  }
-                  className="w-full border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
-                  disabled={!socketConnected}
-                />
-                <div className="flex items-center justify-end gap-3">
-                  <button
-                    type="button"
-                    onClick={handleCloseChat}
-                    className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
-                  >
-                    Close
-                  </button>
-                  <button
-                    type="submit"
-                    className="btn-primary px-6 py-2 rounded-full text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                    disabled={!socketConnected || !chatMessage.trim()}
-                  >
-                    Send
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
+      <TrialDetailsModal
+        isOpen={Boolean(selectedTrial)}
+        trial={selectedTrial}
+        onClose={closeTrialDetails}
+        formatDate={formatDate}
+      />
 
-      {discussionQuestion && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-3xl w-full p-8 relative">
-            <button
-              onClick={() => setDiscussionQuestionId(null)}
-              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
-              aria-label="Close discussion"
-            >
-              <X className="w-5 h-5" />
-            </button>
-            <div className="space-y-6">
-              <div>
-                <span className="inline-flex items-center rounded-full bg-primary-100 text-primary-700 text-xs font-medium px-3 py-1 mb-3">
-                  {discussionQuestion.category}
-                </span>
-                <h3 className="text-2xl font-semibold text-gray-900">{discussionQuestion.title}</h3>
-                <div className="flex items-center flex-wrap gap-2 text-sm text-gray-600 mt-2">
-                  <span>
-                    Asked by{' '}
-                    {discussionQuestion.authorRole === 'patient'
-                      ? 'Patient'
-                      : discussionQuestion.authorName || 'Member'}
-                  </span>
-                  <span className="text-gray-300" aria-hidden="true">
-                    &bull;
-                  </span>
-                  <span>{formatDate(discussionQuestion.createdAt)}</span>
-                </div>
-              </div>
+      <DiscussionModal
+        isOpen={Boolean(discussionQuestion)}
+        question={discussionQuestion}
+        onClose={closeDiscussionModal}
+        formatDate={formatDate}
+        onReply={() => discussionQuestion && openReplyModal(discussionQuestion)}
+      />
 
-              <p className="text-gray-700 leading-relaxed">{discussionQuestion.question}</p>
+      <ScheduleMeetingModal
+        isOpen={isScheduleModalOpen}
+        meetingRequest={selectedMeetingRequest}
+        scheduleForm={scheduleForm}
+        onChangeField={handleScheduleFormChange}
+        onSubmit={handleScheduleSubmit}
+        onClose={closeScheduleModal}
+        submitting={scheduleSubmitting}
+      />
 
-              <div className="border-t pt-4 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-lg font-semibold text-gray-900">
-                    {discussionQuestion.replies.length > 0
-                      ? `${discussionQuestion.replies.length} Responses`
-                      : 'No responses yet'}
-                  </h4>
-                  <button
-                    onClick={() => openReplyModal(discussionQuestion)}
-                    className="btn-primary text-sm px-4 py-2"
-                  >
-                    Reply
-                  </button>
-                </div>
-                <div className="space-y-4 max-h-72 overflow-y-auto pr-1">
-                  {discussionQuestion.replies.map((reply) => (
-                    <div key={reply.id} className="border rounded-2xl p-4 bg-gray-50">
-                      <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
-                        <span>
-                          {reply.authorName}{' '}
-                          <span className="text-gray-300" aria-hidden="true">
-                            &bull;
-                          </span>{' '}
-                          {reply.authorRole === 'researcher' ? 'Researcher' : 'Member'}
-                        </span>
-                        <span>{formatDate(reply.createdAt)}</span>
-                      </div>
-                      <p className="text-gray-700 text-sm leading-relaxed">{reply.message}</p>
-                    </div>
-                  ))}
-
-                  {discussionQuestion.replies.length === 0 && (
-                    <p className="text-sm text-gray-500">
-                      Ready to respond when you are. Patients will be notified once your reply is
-                      posted.
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex justify-end">
-                <button
-                  onClick={() => setDiscussionQuestionId(null)}
-                  className="px-5 py-2 border border-gray-200 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-50"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <ChatWidget role="researcher" />
     </>
   );
 };

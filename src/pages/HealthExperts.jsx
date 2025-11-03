@@ -23,8 +23,15 @@ const HealthExperts = () => {
   const fetchHealthExperts = async () => {
     try {
       setLoading(true);
+      setError('');
       const data = await healthExpertsService.getHealthExperts();
-      setExperts(data.experts || []);
+
+      // Remove duplicates by id
+      const uniqueExperts = Array.from(
+        new Map((data.experts || []).map(expert => [expert.id, expert])).values()
+      );
+
+      setExperts(uniqueExperts);
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to load health experts');
     } finally {
