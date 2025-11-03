@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Heart, Users, BookOpen, FileText, MessageCircle, Star,
@@ -7,6 +7,8 @@ import {
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
 import aiService from '../services/aiService';
+import expertService from '../services/expertService';
+import api from '../services/api';
 import { useForumData } from '../hooks/useForumData';
 
 const PatientDashboard = () => {
@@ -24,6 +26,22 @@ const PatientDashboard = () => {
   });
   const [askAIDrafting, setAskAIDrafting] = useState(false);
   const [askAIError, setAskAIError] = useState(null);
+  const [experts, setExperts] = useState([]);
+  const [expertsLoading, setExpertsLoading] = useState(false);
+  const [expertsError, setExpertsError] = useState(null);
+  const [expertSearch, setExpertSearch] = useState('');
+  const [followedExpertIds, setFollowedExpertIds] = useState([]);
+  const searchDebounceRef = useRef(null);
+  const [isMeetingModalOpen, setIsMeetingModalOpen] = useState(false);
+  const [selectedExpert, setSelectedExpert] = useState(null);
+  const [meetingForm, setMeetingForm] = useState({
+    name: '',
+    email: '',
+    contact: '',
+    notes: '',
+  });
+  const [meetingSubmitting, setMeetingSubmitting] = useState(false);
+  const [meetingFeedback, setMeetingFeedback] = useState(null);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -43,13 +61,19 @@ const PatientDashboard = () => {
           return;
         }
 
+        const favorites = Array.isArray(userData.profile?.favorites?.experts)
+          ? userData.profile.favorites.experts
+          : [];
+
         setUserProfile({
           name: userData.user.name,
           email: userData.user.email,
           condition: userData.profile?.condition || 'Not specified',
           city: userData.profile?.city,
-          country: userData.profile?.country
+          country: userData.profile?.country,
+          favorites,
         });
+        setFollowedExpertIds(favorites);
         setLoading(false);
       } catch (error) {
         console.error('Error fetching user data:', error);

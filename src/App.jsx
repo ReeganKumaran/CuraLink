@@ -6,6 +6,8 @@ import PatientOnboarding from './pages/PatientOnboarding';
 import ResearcherOnboarding from './pages/ResearcherOnboarding';
 import PatientDashboard from './pages/PatientDashboard';
 import ResearcherDashboard from './pages/ResearcherDashboard';
+import HealthExperts from './pages/HealthExperts';
+import ResearcherMeetingRequests from './pages/ResearcherMeetingRequests';
 import DirectorManagement from './components/DirectorManagement/DirectorManagement';
 import './App.css';
 
@@ -19,7 +21,9 @@ function App() {
           <Route path="/patient/onboarding" element={<PatientOnboarding />} />
           <Route path="/researcher/onboarding" element={<ResearcherOnboarding />} />
           <Route path="/patient/dashboard" element={<PatientDashboard />} />
+          <Route path="/patient/health-experts" element={<HealthExperts />} />
           <Route path="/researcher/dashboard" element={<ResearcherDashboard />} />
+          <Route path="/researcher/meeting-requests" element={<ResearcherMeetingRequests />} />
           <Route path="/director-management" element={<DirectorManagement />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
