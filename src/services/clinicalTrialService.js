@@ -3,6 +3,11 @@ import api from './api';
 export async function fetchClinicalTrials(params = {}) {
   const searchParams = new URLSearchParams();
 
+  // Default to including external trials for patients
+  if (params.includeExternal === undefined && !params.createdBy && !params.mine) {
+    params.includeExternal = true;
+  }
+
   Object.entries(params).forEach(([key, value]) => {
     if (value === undefined || value === null) return;
     if (typeof value === 'boolean') {

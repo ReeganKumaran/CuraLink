@@ -9,6 +9,7 @@ import {
   Search,
   Filter,
   TrendingUp,
+  ArrowRight,
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
@@ -137,6 +138,9 @@ const ResearcherDashboard = () => {
   const [trials, setTrials] = useState([]);
   const [trialsLoading, setTrialsLoading] = useState(false);
   const [trialsError, setTrialsError] = useState(null);
+  const [trialsView, setTrialsView] = useState('my'); // 'my' or 'all'
+  const [trialSearchTerm, setTrialSearchTerm] = useState('');
+  const trialSearchDebounceRef = useRef(null);
   const [isTrialModalOpen, setIsTrialModalOpen] = useState(false);
   const [selectedTrial, setSelectedTrial] = useState(null);
   const [trialSubmitting, setTrialSubmitting] = useState(false);
@@ -194,6 +198,20 @@ const handleTrialFormChange = (field) => (event) => {
     ...prev,
     [field]: value,
   }));
+};
+
+const handleTrialSearchChange = (event) => {
+  const value = event.target.value;
+  setTrialSearchTerm(value);
+
+  // Debounce search
+  if (trialSearchDebounceRef.current) {
+    clearTimeout(trialSearchDebounceRef.current);
+  }
+
+  trialSearchDebounceRef.current = setTimeout(() => {
+    loadTrials(value);
+  }, 500);
 };
 
 const resetTrialForm = useCallback(() => {
@@ -400,8 +418,8 @@ const resetTrialForm = useCallback(() => {
     try {
       await expertService.updateMeetingRequest(selectedMeetingRequest.id, {
         status: 'accepted',
-        scheduledAt: scheduledAt.toISOString(),
-        responseNotes: scheduleForm.notes,
+        scheduled_at: scheduledAt.toISOString(),
+        response_notes: scheduleForm.notes,
       });
       await loadMeetingRequests();
       closeScheduleModal();
@@ -452,23 +470,30 @@ const resetTrialForm = useCallback(() => {
     []
   );
 
-  const loadTrials = useCallback(async () => {
+  const loadTrials = useCallback(async (searchOverride) => {
     if (!userProfile?.id) return;
     setTrialsLoading(true);
     setTrialsError(null);
     try {
-      const { trials: fetchedTrials } = await clinicalTrialService.fetchClinicalTrials({
-        createdBy: userProfile.id,
-        limit: 100,
-      });
+      const params = trialsView === 'my'
+        ? { createdBy: userProfile.id, limit: 100 }
+        : { includeExternal: true, limit: 50 };
+
+      // Add search term if provided
+      const searchValue = typeof searchOverride === 'string' ? searchOverride : trialSearchTerm;
+      if (searchValue?.trim()) {
+        params.search = searchValue.trim();
+      }
+
+      const { trials: fetchedTrials } = await clinicalTrialService.fetchClinicalTrials(params);
       setTrials(fetchedTrials || []);
     } catch (error) {
       console.error('Failed to load clinical trials:', error);
-      setTrialsError('Unable to load your clinical trials right now. Please try again.');
+      setTrialsError('Unable to load clinical trials right now. Please try again.');
     } finally {
       setTrialsLoading(false);
     }
-  }, [userProfile]);
+  }, [userProfile, trialsView, trialSearchTerm]);
 
   useEffect(() => {
     if (!userProfile?.id) return;
@@ -857,6 +882,8 @@ const resetTrialForm = useCallback(() => {
             trials={trials}
             trialsError={trialsError}
             trialsLoading={trialsLoading}
+            trialsView={trialsView}
+            onTrialsViewChange={setTrialsView}
             onCreateTrial={openTrialModal}
             onOpenDetails={openTrialDetails}
           />
@@ -942,6 +969,8 @@ const resetTrialForm = useCallback(() => {
                 <input
                   type="text"
                   placeholder="Search trials, collaborators, or discussions"
+                  value={trialSearchTerm}
+                  onChange={handleTrialSearchChange}
                   className="w-full border border-gray-200 rounded-full pl-12 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
                 />
               </div>

@@ -38,6 +38,11 @@ const TrialDetailsModal = ({
                   Remote
                 </span>
               )}
+              {trial.source === 'clinicaltrials.gov' && (
+                <span className="rounded-full bg-blue-50 px-3 py-1 text-blue-700">
+                  ClinicalTrials.gov
+                </span>
+              )}
             </div>
           </div>
 

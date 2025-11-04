@@ -12,22 +12,22 @@ export async function fetchExperts({ search, condition }) {
 }
 
 export async function requestMeeting(payload) {
-  const response = await api.post('/experts/meeting-request', payload);
+  const response = await api.post('/patients/meeting-requests', payload);
   return response.data.data;
 }
 
 export async function fetchPatientMeetingRequests() {
-  const response = await api.get('/experts/meeting-requests');
+  const response = await api.get('/patients/meeting-requests');
   return response.data.data;
 }
 
 export async function fetchResearcherMeetingRequests() {
-  const response = await api.get('/experts/meeting-requests/assigned');
+  const response = await api.get('/researchers/meeting-requests');
   return response.data.data;
 }
 
 export async function updateMeetingRequest(id, payload) {
-  const response = await api.patch(`/experts/meeting-requests/${id}`, payload);
+  const response = await api.put(`/researchers/meeting-requests/${id}`, payload);
   return response.data.data;
 }
 

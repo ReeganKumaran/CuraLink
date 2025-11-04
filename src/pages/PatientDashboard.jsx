@@ -236,6 +236,7 @@ const loadClinicalTrials = useCallback(
     try {
       const params = {
         limit: 40,
+        includeExternal: true, // Always include external trials for patients
       };
 
       if (trialFilters.phase !== 'all') {
@@ -250,9 +251,10 @@ const loadClinicalTrials = useCallback(
         if (userProfile?.country) params.country = userProfile.country;
       }
 
-      if (userProfile?.condition && userProfile.condition !== 'Not specified') {
-        params.condition = userProfile.condition;
-      }
+      // Don't filter by patient condition - show all trials
+      // if (userProfile?.condition && userProfile.condition !== 'Not specified') {
+      //   params.condition = userProfile.condition;
+      // }
 
       const searchTerm =
         typeof overrideSearch === 'string' ? overrideSearch.trim() : trialSearchRef.current;
@@ -260,7 +262,10 @@ const loadClinicalTrials = useCallback(
         params.search = searchTerm;
       }
 
+      console.log('Patient fetching trials with params:', params);
       const { trials } = await clinicalTrialService.fetchClinicalTrials(params);
+      console.log('Patient received trials:', trials?.length, 'trials');
+      console.log('Trial sources:', trials?.map(t => ({ title: t.title?.substring(0, 50), source: t.source })));
       setClinicalTrials(trials || []);
     } catch (error) {
       console.error('Failed to load clinical trials:', error);
@@ -419,6 +424,8 @@ const handleMeetingSubmit = async (event) => {
     setMeetingRequestsError(null);
     try {
       const { requests } = await expertService.fetchPatientMeetingRequests();
+      console.log('Patient meeting requests received:', requests);
+      console.log('First request details:', requests?.[0]);
       setMeetingRequests(requests || []);
     } catch (error) {
       console.error('Failed to load meeting requests:', error);
@@ -492,36 +499,116 @@ const handleMeetingSubmit = async (event) => {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="card">
                 <h3 className="text-lg font-semibold mb-2">Recommended Experts</h3>
-                <p className="text-3xl font-bold text-primary-600">12</p>
+                <p className="text-3xl font-bold text-primary-600">{experts.length}</p>
                 <p className="text-sm text-gray-500">Based on your condition</p>
               </div>
               <div className="card">
                 <h3 className="text-lg font-semibold mb-2">Matching Trials</h3>
-                <p className="text-3xl font-bold text-primary-600">8</p>
-                <p className="text-sm text-gray-500">Currently recruiting</p>
+                <p className="text-3xl font-bold text-primary-600">{clinicalTrials.length}</p>
+                <p className="text-sm text-gray-500">Available trials</p>
               </div>
               <div className="card">
-                <h3 className="text-lg font-semibold mb-2">New Publications</h3>
-                <p className="text-3xl font-bold text-primary-600">24</p>
-                <p className="text-sm text-gray-500">This month</p>
+                <h3 className="text-lg font-semibold mb-2">Meeting Requests</h3>
+                <p className="text-3xl font-bold text-primary-600">{meetingRequests.length}</p>
+                <p className="text-sm text-gray-500">Total requests</p>
               </div>
+            </div>
+
+            <div className="card">
+              <h3 className="text-xl font-semibold mb-4">Meeting Requests</h3>
+              {meetingRequestsLoading ? (
+                <div className="space-y-3">
+                  {[1, 2].map((item) => (
+                    <div key={item} className="animate-pulse h-20 bg-gray-100 rounded-lg" />
+                  ))}
+                </div>
+              ) : meetingRequests.length === 0 ? (
+                <div className="text-center py-8 text-gray-500 text-sm">
+                  No meeting requests yet. Visit the Health Experts tab to request meetings with researchers.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {meetingRequests.slice(0, 5).map((request) => (
+                    <div key={request.id} className="border-b last:border-b-0 py-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex-1">
+                          <p className="font-semibold text-gray-900">{request.researcher_name}</p>
+                          <p className="text-xs text-gray-500">
+                            Requested on {formatDate(request.created_at)}
+                          </p>
+                        </div>
+                        <span
+                          className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
+                            request.status === 'accepted'
+                              ? 'bg-green-100 text-green-700'
+                              : request.status === 'completed'
+                              ? 'bg-blue-100 text-blue-700'
+                              : request.status === 'rejected'
+                              ? 'bg-red-100 text-red-600'
+                              : request.status === 'pending_admin'
+                              ? 'bg-yellow-100 text-yellow-700'
+                              : 'bg-yellow-100 text-yellow-700'
+                          }`}
+                        >
+                          {request.status === 'pending_admin' ? 'pending admin' : request.status.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                      {request.scheduled_at && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-3 mt-2">
+                          <p className="text-sm font-medium text-green-900">
+                            📅 Scheduled for{' '}
+                            {new Date(request.scheduled_at).toLocaleString(undefined, {
+                              weekday: 'short',
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit',
+                            })}
+                          </p>
+                          {request.response_notes && (
+                            <p className="text-sm text-green-800 mt-2">
+                              <span className="font-medium">Notes:</span> {request.response_notes}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {meetingRequests.length > 5 && (
+                <button
+                  onClick={() => setActiveTab('experts')}
+                  className="mt-4 text-primary-600 hover:text-primary-700 text-sm font-medium"
+                >
+                  View all {meetingRequests.length} requests →
+                </button>
+              )}
             </div>
 
             <div className="card">
               <h3 className="text-xl font-semibold mb-4">Recent Activity</h3>
               <div className="space-y-3">
-                <div className="flex items-center justify-between py-2 border-b">
-                  <span className="text-sm text-gray-600">New trial matching your criteria</span>
-                  <span className="text-xs text-gray-500">2 hours ago</span>
-                </div>
-                <div className="flex items-center justify-between py-2 border-b">
-                  <span className="text-sm text-gray-600">Dr. Johnson accepted meeting request</span>
-                  <span className="text-xs text-gray-500">1 day ago</span>
-                </div>
-                <div className="flex items-center justify-between py-2">
-                  <span className="text-sm text-gray-600">New publication in your field</span>
-                  <span className="text-xs text-gray-500">3 days ago</span>
-                </div>
+                {meetingRequests.slice(0, 3).map((request, index) => (
+                  <div key={request.id} className="flex items-center justify-between py-2 border-b">
+                    <span className="text-sm text-gray-600">
+                      {request.status === 'accepted'
+                        ? `${request.researcher_name} accepted your meeting request`
+                        : request.status === 'rejected'
+                        ? `${request.researcher_name} declined your meeting request`
+                        : request.status === 'completed'
+                        ? `Meeting with ${request.researcher_name} completed`
+                        : `Meeting request sent to ${request.researcher_name}`}
+                    </span>
+                    <span className="text-xs text-gray-500">{formatDate(request.created_at)}</span>
+                  </div>
+                ))}
+                {meetingRequests.length === 0 && (
+                  <div className="text-center py-4 text-gray-500 text-sm">
+                    Your activity will appear here
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -659,32 +746,15 @@ const handleMeetingSubmit = async (event) => {
                   You haven’t requested any meetings yet.
                 </div>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-4">
                   {meetingRequests.map((request) => (
-                    <div key={request.id} className="card text-sm text-gray-600">
-                      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                        <div>
+                    <div key={request.id} className="card">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex-1">
                           <p className="text-base font-semibold text-gray-900">{request.researcher_name}</p>
                           <p className="text-xs text-gray-500">
                             Requested on {formatDate(request.created_at)}
                           </p>
-                          {request.scheduled_at && (
-                            <p className="text-sm text-gray-600 mt-1">
-                              Scheduled for{' '}
-                              {new Date(request.scheduled_at).toLocaleString(undefined, {
-                                month: 'short',
-                                day: 'numeric',
-                                year: 'numeric',
-                                hour: 'numeric',
-                                minute: '2-digit',
-                              })}
-                            </p>
-                          )}
-                          {request.response_notes && (
-                            <p className="text-sm text-gray-600 mt-1">
-                              Notes: {request.response_notes}
-                            </p>
-                          )}
                         </div>
                         <span
                           className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
@@ -694,12 +764,56 @@ const handleMeetingSubmit = async (event) => {
                               ? 'bg-blue-100 text-blue-700'
                               : request.status === 'rejected'
                               ? 'bg-red-100 text-red-600'
+                              : request.status === 'pending_admin'
+                              ? 'bg-yellow-100 text-yellow-700'
                               : 'bg-yellow-100 text-yellow-700'
                           }`}
                         >
-                          {request.status.replace(/_/g, ' ')}
+                          {request.status === 'pending_admin' ? 'pending admin' : request.status.replace(/_/g, ' ')}
                         </span>
                       </div>
+
+                      {request.scheduled_at && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                          <div className="flex items-start gap-3">
+                            <div className="text-2xl">📅</div>
+                            <div className="flex-1">
+                              <p className="text-sm font-semibold text-green-900 mb-1">
+                                Meeting Scheduled
+                              </p>
+                              <p className="text-sm text-green-800">
+                                {new Date(request.scheduled_at).toLocaleString(undefined, {
+                                  weekday: 'long',
+                                  month: 'long',
+                                  day: 'numeric',
+                                  year: 'numeric',
+                                  hour: 'numeric',
+                                  minute: '2-digit',
+                                })}
+                              </p>
+                              {request.response_notes && (
+                                <div className="mt-3 pt-3 border-t border-green-200">
+                                  <p className="text-xs font-medium text-green-900 mb-1">Meeting Link / Notes:</p>
+                                  <p className="text-sm text-green-800 break-all">
+                                    {request.response_notes.startsWith('http') ? (
+                                      <a
+                                        href={request.response_notes}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-primary-600 hover:text-primary-700 underline"
+                                      >
+                                        {request.response_notes}
+                                      </a>
+                                    ) : (
+                                      request.response_notes
+                                    )}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -807,6 +921,11 @@ const handleMeetingSubmit = async (event) => {
                             {trial.isRemote && (
                               <span className="rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-700">
                                 Remote
+                              </span>
+                            )}
+                            {trial.source === 'clinicaltrials.gov' && (
+                              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                                ClinicalTrials.gov
                               </span>
                             )}
                           </div>
@@ -983,34 +1102,107 @@ const handleMeetingSubmit = async (event) => {
         );
 
       case 'favorites':
+        const favoriteExperts = experts.filter((expert) => followedExpertIds.includes(expert.id));
+
         return (
-          <div className="space-y-4">
-            <h2 className="text-2xl font-bold mb-4">My Favorites</h2>
-            <div className="card">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="font-semibold">Saved Experts</h3>
-                  <p className="text-sm text-gray-600">3 experts saved</p>
-                </div>
-                <Star className="w-5 h-5 text-yellow-500" />
-              </div>
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-2xl font-bold">My Favorites</h2>
+              <p className="text-sm text-gray-500 mt-1">Your followed health experts and saved items</p>
             </div>
-            <div className="card">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="font-semibold">Saved Trials</h3>
-                  <p className="text-sm text-gray-600">5 trials saved</p>
+
+            {/* Favorite Experts Section */}
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Followed Health Experts</h3>
+              {expertsLoading ? (
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  {[1, 2, 3].map((item) => (
+                    <div key={item} className="card h-32 animate-pulse bg-gray-100" />
+                  ))}
                 </div>
-                <Star className="w-5 h-5 text-yellow-500" />
-              </div>
+              ) : favoriteExperts.length === 0 ? (
+                <div className="card text-center py-12">
+                  <Star className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                  <p className="text-gray-600 mb-2">No favorite experts yet</p>
+                  <p className="text-sm text-gray-500">
+                    Visit the Health Experts tab to follow researchers
+                  </p>
+                  <button
+                    onClick={() => setActiveTab('experts')}
+                    className="mt-4 btn-primary px-4 py-2 text-sm"
+                  >
+                    Browse Experts
+                  </button>
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  {favoriteExperts.map((expert) => (
+                    <div key={expert.id} className="card hover:shadow-lg transition-shadow">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="bg-primary-100 rounded-full p-3">
+                          <Users className="w-6 h-6 text-primary-600" />
+                        </div>
+                        <button
+                          onClick={() => handleFollowToggle(expert)}
+                          className="text-yellow-500 hover:text-yellow-600"
+                        >
+                          <Star className="w-5 h-5 fill-current" />
+                        </button>
+                      </div>
+                      <h4 className="font-semibold text-gray-900 mb-1">{expert.name}</h4>
+                      <p className="text-sm text-gray-600 mb-2">{expert.institution || 'Institution not specified'}</p>
+                      {expert.specialties && expert.specialties.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mb-3">
+                          {expert.specialties.slice(0, 2).map((specialty, idx) => (
+                            <span
+                              key={idx}
+                              className="inline-block bg-primary-50 text-primary-700 text-xs px-2 py-1 rounded"
+                            >
+                              {specialty}
+                            </span>
+                          ))}
+                          {expert.specialties.length > 2 && (
+                            <span className="inline-block text-xs text-gray-500 px-2 py-1">
+                              +{expert.specialties.length - 2} more
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      <button
+                        onClick={() => handleRequestMeeting(expert)}
+                        className="w-full btn-primary text-sm py-2 mt-2"
+                      >
+                        Request Meeting
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-            <div className="card">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="font-semibold">Saved Publications</h3>
-                  <p className="text-sm text-gray-600">12 publications saved</p>
+
+            {/* Placeholder for future features */}
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="card">
+                <div className="flex items-center gap-3">
+                  <div className="bg-blue-100 rounded-full p-3">
+                    <FileText className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-gray-900">Saved Trials</h3>
+                    <p className="text-sm text-gray-500">Coming soon</p>
+                  </div>
                 </div>
-                <Star className="w-5 h-5 text-yellow-500" />
+              </div>
+              <div className="card">
+                <div className="flex items-center gap-3">
+                  <div className="bg-purple-100 rounded-full p-3">
+                    <FileText className="w-5 h-5 text-purple-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-gray-900">Saved Publications</h3>
+                    <p className="text-sm text-gray-500">Coming soon</p>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1192,6 +1384,11 @@ const handleMeetingSubmit = async (event) => {
                   {selectedTrial.isRemote && (
                     <span className="rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-700">
                       Remote
+                    </span>
+                  )}
+                  {selectedTrial.source === 'clinicaltrials.gov' && (
+                    <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                      ClinicalTrials.gov
                     </span>
                   )}
                 </div>
