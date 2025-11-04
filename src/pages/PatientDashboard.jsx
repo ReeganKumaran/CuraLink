@@ -995,38 +995,8 @@ const handleMeetingSubmit = async (event) => {
         );
 
       case 'publications':
-        return (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold">Publications</h2>
-              <input
-                type="text"
-                placeholder="Search publications..."
-                className="px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-              />
-            </div>
-
-            {mockPublications.map(pub => (
-              <div key={pub.id} className="card">
-                <h3 className="font-semibold">{pub.title}</h3>
-                <div className="flex items-center space-x-4 mt-2 text-sm text-gray-600">
-                  <span>{pub.journal}</span>
-                  <span aria-hidden="true">&bull;</span>
-                  <span>{pub.year}</span>
-                </div>
-                <div className="mt-4 flex space-x-2">
-                  <button className="text-primary-600 hover:text-primary-700 text-sm font-medium">
-                    Read Summary
-                  </button>
-                  <span className="text-gray-300" aria-hidden="true">&bull;</span>
-                  <button className="text-primary-600 hover:text-primary-700 text-sm font-medium">
-                    Full Paper
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        );
+        navigate('/publications');
+        return null;
 
       case 'forums':
         return (

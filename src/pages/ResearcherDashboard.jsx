@@ -924,7 +924,8 @@ const resetTrialForm = useCallback(() => {
           />
         );
       case 'publications':
-        return <ResearcherPublicationsSection publications={mockPublications} />;
+        navigate('/publications');
+        return null;
       case 'favorites':
         return <ResearcherFavoritesSection items={favoriteItems} />;
       default:
