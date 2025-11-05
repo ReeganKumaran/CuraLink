@@ -957,7 +957,7 @@ const resetTrialForm = useCallback(() => {
           onSelectTab={setActiveTab}
           onLogout={handleLogout}
         />
-        <main className="flex-1 py-8 px-6 lg:px-10 space-y-6">
+        <main className="flex-1 ml-64 py-8 px-6 lg:px-10 space-y-6">
           <ResearcherHeader
             userProfile={userProfile}
             onAskQuestion={() => setIsAskModalOpen(true)}

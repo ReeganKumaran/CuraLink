@@ -138,8 +138,8 @@ const Publications = () => {
   return (
     <div className="min-h-screen bg-gray-50 flex">
       {/* Sidebar */}
-      <div className="w-64 bg-white shadow-lg fixed h-screen flex flex-col">
-        <div className="p-6 border-b">
+      <div className="w-64 bg-white shadow-lg fixed left-0 top-0 h-screen overflow-y-auto flex flex-col">
+        <div className="p-6 border-b flex-shrink-0">
           <div className="flex items-center mb-4">
             <img src={logo} alt="CuraLink" className="h-16" />
           </div>
@@ -151,7 +151,7 @@ const Publications = () => {
           </div>
         </div>
 
-        <nav className="p-4 flex-1 overflow-y-auto">
+        <nav className="p-4 flex-1">
           {sidebarItems.map((item) => (
             <button
               key={item.id}
@@ -172,7 +172,7 @@ const Publications = () => {
           ))}
         </nav>
 
-        <div className="p-4 border-t">
+        <div className="p-4 border-t flex-shrink-0">
           <button
             onClick={handleLogout}
             className="w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"

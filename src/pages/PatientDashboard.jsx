@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom';
 import {
   Heart, Users, BookOpen, FileText, MessageCircle, Star,
-  Search, Calendar, MapPin, LogOut, User, X, ExternalLink
+  Search, Calendar, MapPin, LogOut, User, X, ExternalLink, Sparkles
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
@@ -56,6 +56,7 @@ const PatientDashboard = () => {
   const [meetingRequests, setMeetingRequests] = useState([]);
   const [meetingRequestsLoading, setMeetingRequestsLoading] = useState(false);
   const [meetingRequestsError, setMeetingRequestsError] = useState(null);
+  const [aiGeneratingNotes, setAiGeneratingNotes] = useState(false);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -331,6 +332,51 @@ const openMeetingModal = (expert) => {
 const closeMeetingModal = () => {
   setIsMeetingModalOpen(false);
   setSelectedExpert(null);
+};
+
+const handleRequestMeeting = (expert) => {
+  openMeetingModal(expert);
+};
+
+const handleAiAssistNotes = async () => {
+  if (!userProfile?.condition || userProfile.condition === 'Not specified') {
+    setMeetingFeedback({
+      type: 'warning',
+      message: 'Please update your condition in your profile to use AI assist.',
+    });
+    return;
+  }
+
+  setAiGeneratingNotes(true);
+  setMeetingFeedback(null);
+
+  try {
+    const prompt = `I am a patient with ${userProfile.condition}${
+      selectedExpert?.specialties
+        ? ` seeking to meet with a health expert specializing in ${selectedExpert.specialties.join(', ')}`
+        : ''
+    }. Write a brief, professional message (2-3 sentences) explaining my interest in scheduling a meeting to discuss my condition and potential treatment options.`;
+
+    const response = await aiService.generateText({ prompt });
+
+    setMeetingForm((prev) => ({
+      ...prev,
+      notes: response.output || '',
+    }));
+
+    setMeetingFeedback({
+      type: 'success',
+      message: 'AI-generated notes added! Feel free to edit them.',
+    });
+  } catch (error) {
+    console.error('AI assist error:', error);
+    setMeetingFeedback({
+      type: 'error',
+      message: 'Failed to generate notes. Please write them manually.',
+    });
+  } finally {
+    setAiGeneratingNotes(false);
+  }
 };
 
 const handleMeetingFormChange = (field) => (event) => {
@@ -1151,7 +1197,7 @@ const handleMeetingSubmit = async (event) => {
             </div>
 
             {/* Placeholder for future features */}
-            <div className="grid gap-4 md:grid-cols-2">
+            {/* <div className="grid gap-4 md:grid-cols-2">
               <div className="card">
                 <div className="flex items-center gap-3">
                   <div className="bg-blue-100 rounded-full p-3">
@@ -1174,7 +1220,7 @@ const handleMeetingSubmit = async (event) => {
                   </div>
                 </div>
               </div>
-            </div>
+            </div> */}
           </div>
         );
 
@@ -1199,10 +1245,10 @@ const handleMeetingSubmit = async (event) => {
     <>
       <div className="min-h-screen bg-gray-50 flex">
         {/* Sidebar */}
-        <div className="w-64 bg-white shadow-lg">
-          <div className="p-6 border-b">
+        <div className="w-64 bg-white shadow-lg fixed left-0 top-0 h-screen overflow-y-auto flex flex-col">
+          <div className="p-6 border-b flex-shrink-0">
             <div className="flex items-center mb-4">
-              
+
               <img src={logo} alt="CuraLink" className="h-16" />
             </div>
             <div className="bg-primary-50 rounded-lg p-3">
@@ -1211,7 +1257,7 @@ const handleMeetingSubmit = async (event) => {
             </div>
           </div>
 
-          <nav className="p-4">
+          <nav className="p-4 flex-1">
             {sidebarItems.map(item => (
               <button
                 key={item.id}
@@ -1228,7 +1274,7 @@ const handleMeetingSubmit = async (event) => {
             ))}
           </nav>
 
-          <div className="p-4 mt-auto border-t">
+          <div className="p-4 border-t flex-shrink-0">
             <button
               onClick={handleLogout}
               className="w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
@@ -1240,7 +1286,7 @@ const handleMeetingSubmit = async (event) => {
         </div>
 
         {/* Main Content */}
-        <div className="flex-1 p-8">
+        <div className="flex-1 p-8 ml-64">
           {renderContent()}
         </div>
       </div>
@@ -1563,7 +1609,18 @@ const handleMeetingSubmit = async (event) => {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Notes for the expert</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium text-gray-700">Notes for the expert</label>
+                    <button
+                      type="button"
+                      onClick={handleAiAssistNotes}
+                      disabled={aiGeneratingNotes}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      {aiGeneratingNotes ? 'Generating...' : 'AI Assist'}
+                    </button>
+                  </div>
                   <textarea
                     value={meetingForm.notes}
                     onChange={handleMeetingFormChange('notes')}
