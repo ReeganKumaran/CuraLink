@@ -31,12 +31,12 @@ const roleOptions = [
     description: "Manage cohorts and share insights.",
     icon: Users,
   },
-  {
-    id: "director",
-    label: "Director",
-    description: "Oversee programs and adoption.",
-    icon: ShieldCheck,
-  },
+  // {
+  //   id: "director",
+  //   label: "Director",
+  //   description: "Oversee programs and adoption.",
+  //   icon: ShieldCheck,
+  // },
 ];
 
 const roleMessaging = {
@@ -48,16 +48,16 @@ const roleMessaging = {
     headline: "Ready to accelerate your research collaborations?",
     helper: "Track study performance and engage with expert communities.",
   },
-  director: {
-    headline: "Lead transformative experiences with clarity.",
-    helper: "Monitor utilization, outcomes, and compliance in one place.",
-  },
+  // director: {
+  //   headline: "Lead transformative experiences with clarity.",
+  //   helper: "Monitor utilization, outcomes, and compliance in one place.",
+  // },
 };
 
 const onboardingRoutes = {
   patient: "/patient/onboarding",
   researcher: "/researcher/onboarding",
-  director: "/director-management",
+  // director: "/director-management",
 };
 
 const Login = () => {
@@ -117,8 +117,8 @@ const Login = () => {
         navigate("/patient/dashboard");
       } else if (normalizedRole === "researcher") {
         navigate("/researcher/dashboard");
-      } else if (normalizedRole === "director" || normalizedRole === "admin") {
-        navigate("/director-management");
+      // } else if (normalizedRole === "director" || normalizedRole === "admin") {
+      //   navigate("/director-management");
       } else {
         navigate("/");
       }
@@ -237,7 +237,7 @@ const Login = () => {
 
             <div
               className={clsx(
-                "grid gap-2 rounded-3xl border px-3 py-3 backdrop-blur-xl sm:grid-cols-3",
+                "grid gap-2 rounded-3xl border px-3 py-3 backdrop-blur-xl sm:grid-cols-2",
                 isDark
                   ? "border-white/15 bg-white/5"
                   : "border-slate-200 bg-white/90 text-slate-700 shadow-lg"
@@ -466,7 +466,7 @@ const Login = () => {
                 >
                   Researcher onboarding
                 </Link>
-                <Link
+                {/* <Link
                   to="/director-management"
                   className={clsx(
                     "rounded-full border px-4 py-2 transition-all duration-300",
@@ -476,7 +476,7 @@ const Login = () => {
                   )}
                 >
                   Director portal
-                </Link>
+                </Link> */}
               </div>
             </div>
 

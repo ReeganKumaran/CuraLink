@@ -3,7 +3,8 @@ import { io } from 'socket.io-client';
 import api, { API_BASE_URL } from '../services/api';
 import authService from '../services/authService';
 
-const SOCKET_URL = API_BASE_URL.split('/api/')[0];
+// Use dedicated Socket URL if available, otherwise extract from API URL
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || API_BASE_URL.split('/api/')[0];
 
 export function useCommunityChat() {
   const [communities, setCommunities] = useState([]);
@@ -41,7 +42,8 @@ export function useCommunityChat() {
 
     const socket = io(SOCKET_URL, {
       auth: { token },
-      transports: ['websocket'],
+      transports: ['polling', 'websocket'],
+      upgrade: true,
     });
 
     socketRef.current = socket;
