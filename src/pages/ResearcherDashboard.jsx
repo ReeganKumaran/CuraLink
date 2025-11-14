@@ -874,6 +874,10 @@ const resetTrialForm = useCallback(() => {
             questions={questions}
             collaborators={collaborators}
             trials={trials}
+            meetingRequests={meetingRequests}
+            formatDate={formatDate}
+            formatDateTime={formatDateTime}
+            onOpenScheduleModal={openScheduleModal}
           />
         );
       case 'trials':
