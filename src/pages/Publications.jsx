@@ -17,6 +17,7 @@ const Publications = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [savedPmids, setSavedPmids] = useState(new Set());
+  const [retryStatus, setRetryStatus] = useState(null);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -75,31 +76,51 @@ const Publications = () => {
         { id: 'favorites', label: 'My Favorites', icon: <Star />, path: '/researcher/dashboard' },
       ];
 
-  const performSearch = useCallback(async (query) => {
+  const performSearch = useCallback(async (query, retryCount = 0) => {
     const searchTerm = query || searchQuery;
 
     if (!searchTerm.trim() || searchTerm.trim().length < 3) {
       setError('Please enter at least 3 characters');
+      setRetryStatus(null);
       return;
     }
 
     setLoading(true);
     setError(null);
 
+    // Show retry status if this is a retry attempt
+    if (retryCount > 0) {
+      setRetryStatus(`Retrying... Attempt ${retryCount + 1}/4`);
+    }
+
     try {
       const { publications: results } = await publicationService.searchPublications(searchTerm);
       setPublications(results || []);
+      setRetryStatus(null); // Clear retry status on success
 
       if (results.length === 0) {
         setError('No publications found. Try different keywords.');
       }
     } catch (err) {
       console.error('Search error:', err);
-      setError('Failed to search publications. Please try again.');
+
+      // Automatic retry logic - retry up to 3 times
+      if (retryCount < 3) {
+        console.log(`Retrying search... Attempt ${retryCount + 2}/4`);
+        // Wait a bit before retrying (exponential backoff)
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+        // Retry the search
+        return performSearch(searchTerm, retryCount + 1);
+      } else {
+        setError('Failed to search publications after multiple attempts. Please try again later.');
+        setRetryStatus(null);
+      }
     } finally {
-      setLoading(false);
+      if (retryCount >= 3 || !error) {
+        setLoading(false);
+      }
     }
-  }, [searchQuery]);
+  }, [searchQuery, error]);
 
   const handleSearch = useCallback(async (e) => {
     e?.preventDefault();
@@ -228,11 +249,18 @@ const Publications = () => {
           </div>
         )}
 
-        {/* Loading State */}
+        {/* Loading State with Retry Status */}
         {loading && (
-          <div className="flex justify-center items-center py-12">
-            <Loader className="w-8 h-8 text-primary-600 animate-spin" />
-            <span className="ml-3 text-gray-600">Searching publications...</span>
+          <div className="flex flex-col justify-center items-center py-12">
+            <div className="flex items-center">
+              <Loader className="w-8 h-8 text-primary-600 animate-spin" />
+              <span className="ml-3 text-gray-600">Searching publications...</span>
+            </div>
+            {retryStatus && (
+              <div className="mt-3 px-4 py-2 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <span className="text-sm text-yellow-700 font-medium">{retryStatus}</span>
+              </div>
+            )}
           </div>
         )}
 

@@ -1588,7 +1588,7 @@ const handleMeetingSubmit = async (event) => {
                 </div>
 
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between">
+                  {/* <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-gray-700">Notes for the expert</label>
                     <button
                       type="button"
@@ -1599,7 +1599,7 @@ const handleMeetingSubmit = async (event) => {
                       <Sparkles className="w-3.5 h-3.5" />
                       {aiGeneratingNotes ? 'Generating...' : 'AI Assist'}
                     </button>
-                  </div>
+                  </div> */}
                   <textarea
                     value={meetingForm.notes}
                     onChange={handleMeetingFormChange('notes')}
