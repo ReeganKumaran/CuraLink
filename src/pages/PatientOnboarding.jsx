@@ -46,6 +46,8 @@ const PatientOnboarding = () => {
       // Register user with backend
       setLoading(true);
       try {
+        const cityValue = formData.city.trim();
+        const countryValue = formData.country.trim();
         await authService.register({
           email: formData.email,
           password: formData.password,
@@ -53,8 +55,8 @@ const PatientOnboarding = () => {
           role: 'patient',
           condition: formData.condition,
           symptoms: formData.symptoms,
-          city: formData.city,
-          country: formData.country
+          city: cityValue || undefined,
+          country: countryValue || undefined
         });
 
         // Navigate to dashboard after successful registration
@@ -102,7 +104,7 @@ const PatientOnboarding = () => {
       case 2:
         return formData.condition || formData.symptoms;
       case 3:
-        return formData.city && formData.country;
+        return true;
       default:
         return false;
     }
@@ -331,7 +333,7 @@ const PatientOnboarding = () => {
               <div className="space-y-4">
                 <div>
                   <label className={clsx('block text-sm font-medium mb-2', isDark ? 'text-white/80' : 'text-gray-700')}>
-                    City *
+                    City (optional)
                   </label>
                   <input
                     type="text"
@@ -339,12 +341,12 @@ const PatientOnboarding = () => {
                     value={formData.city}
                     onChange={handleInputChange}
                     className={inputClasses}
-                    placeholder="Enter your city"
+                    placeholder="Enter your city (optional)"
                   />
                 </div>
                 <div>
                   <label className={clsx('block text-sm font-medium mb-2', isDark ? 'text-white/80' : 'text-gray-700')}>
-                    Country *
+                    Country (optional)
                   </label>
                   <input
                     type="text"
@@ -352,7 +354,7 @@ const PatientOnboarding = () => {
                     value={formData.country}
                     onChange={handleInputChange}
                     className={inputClasses}
-                    placeholder="Enter your country"
+                    placeholder="Enter your country (optional)"
                   />
                 </div>
               </div>

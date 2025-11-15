@@ -7,6 +7,7 @@ const ResearcherCollaboratorsSection = ({
   onRefreshMeetingRequests,
   onOpenScheduleModal,
   onUpdateMeetingStatus,
+  onOpenChat,
   formatDate,
   formatDateTime,
   collaborators,
@@ -127,6 +128,12 @@ const ResearcherCollaboratorsSection = ({
                     </button>
                   </>
                 )}
+                <button
+                  onClick={() => onOpenChat && onOpenChat(request)}
+                  className="text-primary-600 hover:text-primary-700 text-xs font-medium"
+                >
+                  Open Chat
+                </button>
               </div>
             </div>
           ))}
@@ -206,4 +213,3 @@ const ResearcherCollaboratorsSection = ({
 );
 
 export default ResearcherCollaboratorsSection;
-

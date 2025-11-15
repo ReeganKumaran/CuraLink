@@ -15,6 +15,151 @@ import api from '../services/api';
 import { useForumData } from '../hooks/useForumData';
 import ChatWidget from '../components/ChatWidget';
 import UnifiedSearchModal from '../components/search/UnifiedSearchModal';
+import MeetingChatModal from '../components/meetings/MeetingChatModal';
+
+const EXPERTS_REFRESH_INTERVAL_MS = 4 * 60 * 1000;
+const TRIALS_REFRESH_INTERVAL_MS = 6 * 60 * 1000;
+
+const normalizeLocationText = (value) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+const hasCoordinates = (lat, lon) =>
+  Number.isFinite(lat) && Number.isFinite(lon);
+
+const computeDistanceKm = (lat1, lon1, lat2, lon2) => {
+  if (!hasCoordinates(lat1, lon1) || !hasCoordinates(lat2, lon2)) {
+    return null;
+  }
+  const toRad = (degree) => (degree * Math.PI) / 180;
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+const formatDistanceLabel = (distanceKm) => {
+  if (!Number.isFinite(distanceKm)) {
+    return '';
+  }
+  if (distanceKm >= 100) {
+    return `${Math.round(distanceKm)} km away`;
+  }
+  if (distanceKm >= 1) {
+    return `${distanceKm.toFixed(1)} km away`;
+  }
+  return `${Math.round(distanceKm * 1000)} m away`;
+};
+
+const computeLocationScore = (fields = [], patientLocation = {}, extras = {}) => {
+  const patientLat = Number(patientLocation.latitude);
+  const patientLon = Number(patientLocation.longitude);
+  const targetLat = extras.latitude;
+  const targetLon = extras.longitude;
+
+  if (hasCoordinates(patientLat, patientLon) && hasCoordinates(targetLat, targetLon)) {
+    const distanceKm = computeDistanceKm(patientLat, patientLon, targetLat, targetLon);
+    const score = Math.max(0, 200 - distanceKm);
+    return {
+      score,
+      label: formatDistanceLabel(distanceKm),
+      distanceKm,
+    };
+  }
+
+  const normalizedFields = fields
+    .map((field) => normalizeLocationText(field))
+    .filter(Boolean);
+  if (normalizedFields.length === 0 && !extras.isRemote) {
+    return { score: 0, label: '', distanceKm: null };
+  }
+
+  const patientCity = normalizeLocationText(patientLocation.city);
+  const patientCountry = normalizeLocationText(patientLocation.country);
+  let score = 0;
+  let label = '';
+
+  if (patientCity) {
+    const hasCityMatch = normalizedFields.some((field) => field.includes(patientCity));
+    if (hasCityMatch) {
+      score += 60;
+      label = patientLocation.city ? `Near ${patientLocation.city}` : 'Nearby';
+    }
+  }
+
+  if (!label && patientCountry) {
+    const hasCountryMatch = normalizedFields.some((field) => field.includes(patientCountry));
+    if (hasCountryMatch) {
+      score += 40;
+      label = patientLocation.country ? `Matches ${patientLocation.country}` : 'Regional match';
+    }
+  }
+
+  if (!label && extras.isRemote) {
+    score += 20;
+    label = 'Remote friendly';
+  }
+
+  if (extras.baseScore) {
+    score += extras.baseScore;
+  }
+
+  return { score, label, distanceKm: null };
+};
+
+const annotateAndSortByLocation = (items = [], patientLocation = {}, resolver) => {
+  if (
+    !patientLocation?.city &&
+    !patientLocation?.country &&
+    !hasCoordinates(patientLocation?.latitude, patientLocation?.longitude)
+  ) {
+    return items;
+  }
+
+  return items
+    .map((item, index) => {
+      const config = resolver(item) || {};
+      const { score, label, distanceKm } = computeLocationScore(config.fields, patientLocation, config.extras);
+      return {
+        ...item,
+        locationScore: score,
+        locationMatchLabel: label,
+        distanceKm,
+        _originalIndex: index,
+      };
+    })
+    .sort((a, b) => {
+      if (b.locationScore === a.locationScore) {
+        return a._originalIndex - b._originalIndex;
+      }
+      return b.locationScore - a.locationScore;
+    })
+    .map(({ _originalIndex, ...rest }) => rest);
+};
+
+const formatLastUpdatedLabel = (timestamp) => {
+  if (!timestamp) {
+    return 'Updating...';
+  }
+  const diff = Date.now() - timestamp;
+  if (diff < 60 * 1000) {
+    return 'Updated just now';
+  }
+  const minutes = Math.floor(diff / (60 * 1000));
+  if (minutes < 60) {
+    return `Updated ${minutes} min${minutes > 1 ? 's' : ''} ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `Updated ${hours} hr${hours > 1 ? 's' : ''} ago`;
+  }
+  const days = Math.floor(hours / 24);
+  return `Updated ${days} day${days > 1 ? 's' : ''} ago`;
+};
 
 const PatientDashboard = () => {
   const navigate = useNavigate();
@@ -60,8 +205,12 @@ const PatientDashboard = () => {
   const [meetingRequests, setMeetingRequests] = useState([]);
   const [meetingRequestsLoading, setMeetingRequestsLoading] = useState(false);
   const [meetingRequestsError, setMeetingRequestsError] = useState(null);
-  const [_aiGeneratingNotes, setAiGeneratingNotes] = useState(false);
+  const [aiGeneratingNotes, setAiGeneratingNotes] = useState(false);
   const [isUnifiedSearchOpen, setIsUnifiedSearchOpen] = useState(false);
+  const [isMeetingChatOpen, setIsMeetingChatOpen] = useState(false);
+  const [chatMeetingRequest, setChatMeetingRequest] = useState(null);
+  const [expertsUpdatedAt, setExpertsUpdatedAt] = useState(null);
+  const [trialsUpdatedAt, setTrialsUpdatedAt] = useState(null);
   const [favoriteCollections, setFavoriteCollections] = useState({
     experts: [],
     trials: [],
@@ -81,8 +230,10 @@ const PatientDashboard = () => {
   const [isExportingFavorites, setIsExportingFavorites] = useState(false);
   const pendingTrialFetches = useRef(new Set());
   const [followProcessingIds, setFollowProcessingIds] = useState(() => new Set());
+  const [locationUpdating, setLocationUpdating] = useState(false);
+  const [locationUpdateMessage, setLocationUpdateMessage] = useState(null);
 
-  const _unifiedSearchContext = useMemo(() => {
+  const unifiedSearchContext = useMemo(() => {
     const conditionValue =
       userProfile?.condition && userProfile.condition !== 'Not specified'
         ? userProfile.condition
@@ -91,20 +242,94 @@ const PatientDashboard = () => {
     return { condition: conditionValue, location: locationValue };
   }, [userProfile?.condition, userProfile?.city, userProfile?.country]);
 
+  const patientLocation = useMemo(
+    () => ({
+      city: (userProfile?.city || '').trim(),
+      country: (userProfile?.country || '').trim(),
+      latitude:
+        typeof userProfile?.latitude === 'number'
+          ? userProfile.latitude
+          : userProfile?.latitude
+          ? Number(userProfile.latitude)
+          : null,
+      longitude:
+        typeof userProfile?.longitude === 'number'
+          ? userProfile.longitude
+          : userProfile?.longitude
+          ? Number(userProfile.longitude)
+          : null,
+    }),
+    [userProfile?.city, userProfile?.country, userProfile?.latitude, userProfile?.longitude]
+  );
+
+  const applyExpertLocationSort = useCallback(
+    (items = []) =>
+      annotateAndSortByLocation(items, patientLocation, (expert) => {
+        const latitude =
+          typeof expert.latitude === 'number'
+            ? expert.latitude
+            : expert.latitude
+            ? Number(expert.latitude)
+            : null;
+        const longitude =
+          typeof expert.longitude === 'number'
+            ? expert.longitude
+            : expert.longitude
+            ? Number(expert.longitude)
+            : null;
+        return {
+          fields: [expert.location, expert.institution, expert.city, expert.country],
+          extras: {
+            latitude,
+            longitude,
+            isRemote: Boolean(expert.availableForMeetings && !hasCoordinates(latitude, longitude)),
+          },
+        };
+      }),
+    [patientLocation]
+  );
+
+  const applyTrialLocationSort = useCallback(
+    (items = []) =>
+      annotateAndSortByLocation(items, patientLocation, (trial) => ({
+        fields: [trial.city, trial.country, trial.location],
+        extras: {
+          isRemote: Boolean(trial.isRemote),
+          latitude:
+            typeof trial.latitude === 'number'
+              ? trial.latitude
+              : trial.latitude
+              ? Number(trial.latitude)
+              : null,
+          longitude:
+            typeof trial.longitude === 'number'
+              ? trial.longitude
+              : trial.longitude
+              ? Number(trial.longitude)
+              : null,
+        },
+      })),
+    [patientLocation]
+  );
+
   const favoriteExpertsList = useMemo(
     () =>
-      favoriteCollections.experts
-        .map((id) => expertCache[id])
-        .filter(Boolean),
-    [favoriteCollections.experts, expertCache]
+      applyExpertLocationSort(
+        favoriteCollections.experts
+          .map((id) => expertCache[id])
+          .filter(Boolean)
+      ),
+    [favoriteCollections.experts, expertCache, applyExpertLocationSort]
   );
 
   const favoriteTrialsList = useMemo(
     () =>
-      favoriteCollections.trials
-        .map((id) => favoriteTrialsCache[id])
-        .filter(Boolean),
-    [favoriteCollections.trials, favoriteTrialsCache]
+      applyTrialLocationSort(
+        favoriteCollections.trials
+          .map((id) => favoriteTrialsCache[id])
+          .filter(Boolean)
+      ),
+    [favoriteCollections.trials, favoriteTrialsCache, applyTrialLocationSort]
   );
 
   const favoritePublicationsList = useMemo(
@@ -172,6 +397,18 @@ const PatientDashboard = () => {
           condition: userData.profile?.condition || 'Not specified',
           city: userData.profile?.city,
           country: userData.profile?.country,
+          latitude:
+            typeof userData.profile?.latitude === 'number'
+              ? userData.profile.latitude
+              : userData.profile?.latitude
+              ? Number(userData.profile.latitude)
+              : null,
+          longitude:
+            typeof userData.profile?.longitude === 'number'
+              ? userData.profile.longitude
+              : userData.profile?.longitude
+              ? Number(userData.profile.longitude)
+              : null,
           favorites: profileFavorites,
         });
         setFavoriteCollections(profileFavorites);
@@ -354,7 +591,9 @@ const loadClinicalTrials = useCallback(
       const { trials } = await clinicalTrialService.fetchClinicalTrials(params);
       console.log('Patient received trials:', trials?.length, 'trials');
       console.log('Trial sources:', trials?.map(t => ({ title: t.title?.substring(0, 50), source: t.source })));
-      setClinicalTrials(trials || []);
+      const sortedTrials = applyTrialLocationSort(trials || []);
+      setClinicalTrials(sortedTrials);
+      setTrialsUpdatedAt(Date.now());
     } catch (error) {
       console.error('Failed to load clinical trials:', error);
       setTrialsError('Unable to load clinical trials right now. Please try again.');
@@ -362,7 +601,7 @@ const loadClinicalTrials = useCallback(
       setTrialsLoading(false);
     }
   },
-  [userProfile, trialFilters]
+  [userProfile, trialFilters, applyTrialLocationSort]
 );
 
 useEffect(() => {
@@ -432,6 +671,16 @@ const openMeetingModal = (expert) => {
 const closeMeetingModal = () => {
   setIsMeetingModalOpen(false);
   setSelectedExpert(null);
+};
+
+const openMeetingChat = (request) => {
+  setChatMeetingRequest(request);
+  setIsMeetingChatOpen(true);
+};
+
+const closeMeetingChat = () => {
+  setIsMeetingChatOpen(false);
+  setChatMeetingRequest(null);
 };
 
 const handleUnifiedExpertView = (expert) => {
@@ -791,11 +1040,13 @@ const handleMeetingSubmit = async (event) => {
           search: term,
           condition: conditionFilter,
         });
-        setExperts(fetchedExperts || []);
+        const sortedExperts = applyExpertLocationSort(fetchedExperts || []);
+        setExperts(sortedExperts);
+        setExpertsUpdatedAt(Date.now());
         setExpertCache((prev) => {
-          if (!Array.isArray(fetchedExperts)) return prev;
+          if (!Array.isArray(sortedExperts)) return prev;
           const next = { ...prev };
-          fetchedExperts.forEach((expert) => {
+          sortedExperts.forEach((expert) => {
             if (expert?.id) {
               next[expert.id] = expert;
             }
@@ -809,7 +1060,7 @@ const handleMeetingSubmit = async (event) => {
         setExpertsLoading(false);
       }
     },
-    [userProfile]
+    [userProfile, applyExpertLocationSort]
   );
 
   const loadMeetingRequests = useCallback(async () => {
@@ -828,6 +1079,54 @@ const handleMeetingSubmit = async (event) => {
       setMeetingRequestsLoading(false);
     }
   }, [userProfile]);
+
+  const handleUseCurrentLocation = useCallback(() => {
+    if (!userProfile) return;
+    if (!navigator.geolocation) {
+      setLocationUpdateMessage('Geolocation is not available in this browser.');
+      setTimeout(() => setLocationUpdateMessage(null), 4000);
+      return;
+    }
+
+    setLocationUpdating(true);
+    setLocationUpdateMessage('Locating...');
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const { latitude, longitude } = position.coords;
+          await api.put('/patients/profile', {
+            latitude,
+            longitude,
+          });
+          setUserProfile((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  latitude,
+                  longitude,
+                }
+              : prev
+          );
+          setLocationUpdateMessage('Location updated.');
+          loadExperts(expertSearch);
+          loadClinicalTrialsRef.current(trialSearchRef.current);
+        } catch (error) {
+          console.error('Failed to update location:', error);
+          setLocationUpdateMessage('Unable to update location. Please try again.');
+        } finally {
+          setLocationUpdating(false);
+          setTimeout(() => setLocationUpdateMessage(null), 4000);
+        }
+      },
+      (error) => {
+        console.warn('Geolocation error:', error);
+        setLocationUpdating(false);
+        setLocationUpdateMessage(error.message || 'Location permission denied.');
+        setTimeout(() => setLocationUpdateMessage(null), 4000);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }, [expertSearch, loadExperts, userProfile]);
 
   useEffect(() => {
     if (!userProfile) return;
@@ -850,10 +1149,18 @@ const handleMeetingSubmit = async (event) => {
     };
   }, [expertSearch, userProfile, loadExperts]);
 
-useEffect(() => {
-  if (!userProfile) return;
-  loadClinicalTrials(trialSearchRef.current);
-}, [userProfile, trialFilters, loadClinicalTrials]);
+  useEffect(() => {
+    if (!userProfile) return;
+    const intervalId = setInterval(() => {
+      loadExperts(expertSearch);
+    }, EXPERTS_REFRESH_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [userProfile, loadExperts, expertSearch]);
+
+  useEffect(() => {
+    if (!userProfile) return;
+    loadClinicalTrials(trialSearchRef.current);
+  }, [userProfile, trialFilters, loadClinicalTrials]);
 
 useEffect(() => {
   if (!Array.isArray(clinicalTrials) || clinicalTrials.length === 0) return;
@@ -874,11 +1181,11 @@ useEffect(() => {
   });
 }, [favoriteCollections.trials, ensureTrialInCache]);
 
-useEffect(() => {
-  if (!userProfile) return;
-  if (trialSearchDebounceRef.current) {
-    clearTimeout(trialSearchDebounceRef.current);
-  }
+  useEffect(() => {
+    if (!userProfile) return;
+    if (trialSearchDebounceRef.current) {
+      clearTimeout(trialSearchDebounceRef.current);
+    }
   trialSearchDebounceRef.current = setTimeout(() => {
     loadClinicalTrialsRef.current(trialSearchRef.current);
   }, 400);
@@ -887,7 +1194,15 @@ useEffect(() => {
       clearTimeout(trialSearchDebounceRef.current);
     }
   };
-}, [trialSearch, userProfile]);
+  }, [trialSearch, userProfile]);
+
+  useEffect(() => {
+    if (!userProfile) return;
+    const intervalId = setInterval(() => {
+      loadClinicalTrialsRef.current(trialSearchRef.current);
+    }, TRIALS_REFRESH_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [userProfile]);
 
 useEffect(() => {
   if (activeTab !== 'favorites') return;
@@ -978,8 +1293,9 @@ useEffect(() => {
               ) : (
                 <div className="space-y-3">
                   {meetingRequests.slice(0, 5).map((request) => (
-                    <div key={request.id} className="border-b last:border-b-0 py-3">
-                      <div className="flex items-center justify-between mb-2">
+
+                    <div key={request.id} className="border-b last:border-b-0 py-3 space-y-2">
+                      <div className="flex items-center justify-between">
                         <div className="flex-1">
                           <p className="font-semibold text-gray-900">{request.researcher_name}</p>
                           <p className="text-xs text-gray-500">
@@ -999,13 +1315,21 @@ useEffect(() => {
                               : 'bg-yellow-100 text-yellow-700'
                           }`}
                         >
-                          {request.status === 'pending_admin' ? 'pending admin' : request.status.replace(/_/g, ' ')}
+                          {request.status === 'pending_admin'
+                            ? 'pending admin'
+                            : request.status.replace(/_/g, ' ')}
                         </span>
                       </div>
-                      {request.scheduled_at && (
-                        <div className="bg-green-50 border border-green-200 rounded-lg p-3 mt-2">
-                          <p className="text-sm font-medium text-green-900">
-                            📅 Scheduled for{' '}
+                      <div className="flex items-center justify-between text-xs">
+                        <button
+                          onClick={() => openMeetingChat(request)}
+                          className="text-primary-600 hover:text-primary-700 font-medium"
+                        >
+                          Open chat
+                        </button>
+                        {request.scheduled_at && (
+                          <span className="text-gray-500">
+                            Scheduled for{' '}
                             {new Date(request.scheduled_at).toLocaleString(undefined, {
                               weekday: 'short',
                               month: 'short',
@@ -1014,12 +1338,14 @@ useEffect(() => {
                               hour: 'numeric',
                               minute: '2-digit',
                             })}
+                          </span>
+                        )}
+                      </div>
+                      {request.response_notes && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                          <p className="text-sm text-green-800">
+                            <span className="font-medium">Notes:</span> {request.response_notes}
                           </p>
-                          {request.response_notes && (
-                            <p className="text-sm text-green-800 mt-2">
-                              <span className="font-medium">Notes:</span> {request.response_notes}
-                            </p>
-                          )}
                         </div>
                       )}
                     </div>
@@ -1074,17 +1400,40 @@ useEffect(() => {
                   {userProfile?.condition ? ` (${userProfile.condition})` : ''}
                 </p>
               </div>
-              <div className="relative w-full md:w-72">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type="text"
-                  value={expertSearch}
-                  onChange={(event) => setExpertSearch(event.target.value)}
-                  placeholder="Search experts by name, specialty, or institution..."
-                  className="pl-10 pr-4 py-2 border rounded-lg text-sm w-full focus:outline-none focus:ring-2 focus:ring-primary-500"
-                />
+              <div className="flex flex-col gap-2 md:items-end">
+                <div className="text-xs text-gray-500 text-right">
+                  {formatLastUpdatedLabel(expertsUpdatedAt)}
+                </div>
+                <div className="relative w-full md:w-72">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    value={expertSearch}
+                    onChange={(event) => setExpertSearch(event.target.value)}
+                    placeholder="Search experts by name, specialty, or institution..."
+                    className="pl-10 pr-4 py-2 border rounded-lg text-sm w-full focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  />
+                </div>
               </div>
             </div>
+            {!patientLocation.city &&
+              !patientLocation.country &&
+              !hasCoordinates(patientLocation.latitude, patientLocation.longitude) && (
+                <div className="text-xs text-amber-600 flex flex-col sm:flex-row sm:items-center sm:gap-3">
+                  <span>Add your city/country in your profile or</span>
+                  <button
+                    type="button"
+                    onClick={handleUseCurrentLocation}
+                    disabled={locationUpdating}
+                    className="inline-flex items-center text-primary-600 hover:text-primary-700 disabled:opacity-60"
+                  >
+                    {locationUpdating ? 'Detecting location...' : 'Use current location'}
+                  </button>
+                  {locationUpdateMessage && (
+                    <span className="text-gray-500">{locationUpdateMessage}</span>
+                  )}
+                </div>
+              )}
 
             {expertsError && (
               <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
@@ -1145,6 +1494,17 @@ useEffect(() => {
                             <MapPin className="w-4 h-4" />
                             <span>{expert.location || expert.institution || 'Location not specified'}</span>
                           </div>
+                          {Number.isFinite(expert.distanceKm) ? (
+                            <span className="inline-flex items-center rounded-full bg-primary-50 text-primary-700 text-xs font-medium px-3 py-1 mt-2">
+                              {formatDistanceLabel(expert.distanceKm)}
+                            </span>
+                          ) : (
+                            expert.locationMatchLabel && (
+                              <span className="inline-flex items-center rounded-full bg-primary-50 text-primary-700 text-xs font-medium px-3 py-1 mt-2">
+                                {expert.locationMatchLabel}
+                              </span>
+                            )
+                          )}
                           {expert.researchInterests && (
                             <p className="text-sm text-gray-500 mt-2">
                               <span className="font-medium text-gray-700">Research focus:</span>{' '}
@@ -1241,6 +1601,27 @@ useEffect(() => {
                           {request.status === 'pending_admin' ? 'pending admin' : request.status.replace(/_/g, ' ')}
                         </span>
                       </div>
+                      <div className="flex items-center justify-between text-xs mb-3">
+                        <button
+                          onClick={() => openMeetingChat(request)}
+                          className="text-primary-600 hover:text-primary-700 font-medium"
+                        >
+                          Message researcher
+                        </button>
+                        {request.scheduled_at && (
+                          <span className="text-gray-500">
+                            Scheduled for{' '}
+                            {new Date(request.scheduled_at).toLocaleString(undefined, {
+                              weekday: 'short',
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                        )}
+                      </div>
 
                       {request.scheduled_at && (
                         <div className="bg-green-50 border border-green-200 rounded-lg p-4">
@@ -1303,7 +1684,10 @@ useEffect(() => {
                     : 'your interests'}
                 </p>
               </div>
-              <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+              <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                <div className="text-xs text-gray-500 text-right sm:mr-4">
+                  {formatLastUpdatedLabel(trialsUpdatedAt)}
+                </div>
                 <div className="relative w-full sm:w-64">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                   <input
@@ -1336,12 +1720,21 @@ useEffect(() => {
                 </select>
               </div>
             </div>
-
-            {trialFilters.location === 'near' && !userProfile?.city && !userProfile?.country && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                Add your city or country in your profile to surface trials near you.
-              </div>
+            {!patientLocation.city && !patientLocation.country && (
+              <p className="text-xs text-amber-600">
+                Provide your city or country to prioritize nearby trials automatically.
+              </p>
             )}
+
+            {trialFilters.location === 'near' &&
+              !patientLocation.city &&
+              !patientLocation.country &&
+              !hasCoordinates(patientLocation.latitude, patientLocation.longitude) && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                  Add your city/country in your profile or use the “Use current location” button
+                  above to surface trials near you.
+                </div>
+              )}
 
             {trialsError && (
               <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
@@ -1411,6 +1804,17 @@ useEffect(() => {
                               </>
                             )}
                           </div>
+                          {Number.isFinite(trial.distanceKm) ? (
+                            <span className="inline-flex items-center rounded-full bg-primary-50 text-primary-700 text-xs font-medium px-3 py-1 mt-3">
+                              {formatDistanceLabel(trial.distanceKm)}
+                            </span>
+                          ) : (
+                            trial.locationMatchLabel && (
+                              <span className="inline-flex items-center rounded-full bg-primary-50 text-primary-700 text-xs font-medium px-3 py-1 mt-3">
+                                {trial.locationMatchLabel}
+                              </span>
+                            )
+                          )}
                           {trial.summary && (
                             <p className="mt-3 text-sm text-gray-600 line-clamp-2">{trial.summary}</p>
                           )}
@@ -1428,15 +1832,26 @@ useEffect(() => {
                           )}
                         </div>
                         <div className="flex shrink-0 flex-col items-start gap-3 sm:items-end">
-                          <div className="flex items-center text-sm text-gray-600">
-                            <MapPin className="mr-2 h-4 w-4 text-primary-500" />
-                            {locationLabel}
-                          </div>
-                          {trial.startDate && (
                             <div className="flex items-center text-sm text-gray-600">
-                              <Calendar className="mr-2 h-4 w-4 text-primary-500" />
-                              Starts {formatDate(trial.startDate)}
+                              <MapPin className="mr-2 h-4 w-4 text-primary-500" />
+                              {locationLabel}
                             </div>
+                            {Number.isFinite(trial.distanceKm) ? (
+                              <div className="text-xs text-primary-600 font-medium">
+                                {formatDistanceLabel(trial.distanceKm)}
+                              </div>
+                            ) : (
+                              trial.locationMatchLabel && (
+                                <div className="text-xs text-primary-600 font-medium">
+                                  {trial.locationMatchLabel}
+                                </div>
+                              )
+                            )}
+                            {trial.startDate && (
+                              <div className="flex items-center text-sm text-gray-600">
+                                <Calendar className="mr-2 h-4 w-4 text-primary-500" />
+                                Starts {formatDate(trial.startDate)}
+                              </div>
                           )}
                           <button
                             onClick={() => handleTrialFavoriteToggle(trial)}
@@ -1667,6 +2082,21 @@ useEffect(() => {
                           <p className="text-sm text-gray-600 mb-2">
                             {expert.institution || 'Institution not specified'}
                           </p>
+                          <div className="flex items-center space-x-2 text-xs text-gray-500 mb-2">
+                            <MapPin className="w-4 h-4" />
+                            <span>{expert.location || expert.institution || 'Location not specified'}</span>
+                          </div>
+                          {Number.isFinite(expert.distanceKm) ? (
+                            <span className="inline-flex items-center rounded-full bg-primary-50 text-primary-700 text-xs font-medium px-3 py-1 mb-2">
+                              {formatDistanceLabel(expert.distanceKm)}
+                            </span>
+                          ) : (
+                            expert.locationMatchLabel && (
+                              <span className="inline-flex items-center rounded-full bg-primary-50 text-primary-700 text-xs font-medium px-3 py-1 mb-2">
+                                {expert.locationMatchLabel}
+                              </span>
+                            )
+                          )}
                           {expert.specialties && expert.specialties.length > 0 && (
                             <div className="flex flex-wrap gap-1 mb-3">
                               {expert.specialties.slice(0, 2).map((specialty, idx) => (
@@ -1737,6 +2167,17 @@ useEffect(() => {
                                   [trial.city, trial.country].filter(Boolean).join(', ') ||
                                   'Location not specified'}
                               </p>
+                              {Number.isFinite(trial.distanceKm) ? (
+                                <p className="text-xs text-primary-600 mt-1">
+                                  {formatDistanceLabel(trial.distanceKm)}
+                                </p>
+                              ) : (
+                                trial.locationMatchLabel && (
+                                  <p className="text-xs text-primary-600 mt-1">
+                                    {trial.locationMatchLabel}
+                                  </p>
+                                )
+                              )}
                             </div>
                             <div className="flex flex-col items-start gap-2 sm:items-end">
                               <label className="inline-flex items-center gap-1 text-xs text-gray-500">
@@ -2509,23 +2950,21 @@ useEffect(() => {
 
       <UnifiedSearchModal
         isOpen={isUnifiedSearchOpen}
-        context={{
-          condition:
-            userProfile?.condition && userProfile.condition !== 'Not specified'
-              ? userProfile.condition
-              : '',
-          location: userProfile?.city || userProfile?.country || '',
-        }}
+        context={unifiedSearchContext}
         onClose={() => setIsUnifiedSearchOpen(false)}
         onViewExpert={handleUnifiedExpertView}
         onViewTrial={handleUnifiedTrialView}
         onViewDiscussion={handleUnifiedDiscussionView}
       />
-      <ChatWidget role="patient" />
-    </>
-  );
+    <ChatWidget role="patient" />
+    <MeetingChatModal
+      isOpen={isMeetingChatOpen}
+      meeting={chatMeetingRequest}
+      role="patient"
+      onClose={closeMeetingChat}
+    />
+  </>
+);
 };
 
 export default PatientDashboard;
-
-

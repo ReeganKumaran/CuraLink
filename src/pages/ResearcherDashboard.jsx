@@ -35,6 +35,7 @@ import TrialModal from '../components/researcher/TrialModal';
 import TrialDetailsModal from '../components/researcher/TrialDetailsModal';
 import ScheduleMeetingModal from '../components/researcher/ScheduleMeetingModal';
 import DiscussionModal from '../components/researcher/DiscussionModal';
+import MeetingChatModal from '../components/meetings/MeetingChatModal';
 
 const buildGeneratedTrialSummary = (form) => {
   const { title, phase, sponsor, condition, location, city, country } = form;
@@ -176,6 +177,8 @@ const ResearcherDashboard = () => {
   const [selectedMeetingRequest, setSelectedMeetingRequest] = useState(null);
   const [scheduleForm, setScheduleForm] = useState({ date: '', time: '', notes: '' });
   const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
+  const [isMeetingChatOpen, setIsMeetingChatOpen] = useState(false);
+  const [chatMeetingRequest, setChatMeetingRequest] = useState(null);
 
   const trialPhases = useMemo(
     () => ['Phase I', 'Phase II', 'Phase III', 'Phase IV', 'Observational'],
@@ -393,6 +396,16 @@ const resetTrialForm = useCallback(() => {
     setSelectedMeetingRequest(null);
   };
 
+  const openMeetingChat = (request) => {
+    setChatMeetingRequest(request);
+    setIsMeetingChatOpen(true);
+  };
+
+  const closeMeetingChat = () => {
+    setIsMeetingChatOpen(false);
+    setChatMeetingRequest(null);
+  };
+
   const handleScheduleFormChange = (field) => (event) => {
     const value = event.target.value;
     setScheduleForm((prev) => ({
@@ -435,7 +448,7 @@ const resetTrialForm = useCallback(() => {
     try {
       await expertService.updateMeetingRequest(request.id, {
         status,
-        responseNotes: notes,
+        response_notes: notes,
       });
       await loadMeetingRequests();
     } catch (error) {
@@ -878,6 +891,7 @@ const resetTrialForm = useCallback(() => {
             formatDate={formatDate}
             formatDateTime={formatDateTime}
             onOpenScheduleModal={openScheduleModal}
+            onOpenChat={openMeetingChat}
           />
         );
       case 'trials':
@@ -901,6 +915,7 @@ const resetTrialForm = useCallback(() => {
             onRefreshMeetingRequests={loadMeetingRequests}
             onOpenScheduleModal={openScheduleModal}
             onUpdateMeetingStatus={handleMeetingStatusChange}
+             onOpenChat={openMeetingChat}
             formatDate={formatDate}
             formatDateTime={formatDateTime}
             collaborators={collaborators}
@@ -1070,6 +1085,13 @@ const resetTrialForm = useCallback(() => {
         onSubmit={handleScheduleSubmit}
         onClose={closeScheduleModal}
         submitting={scheduleSubmitting}
+      />
+
+      <MeetingChatModal
+        isOpen={isMeetingChatOpen}
+        meeting={chatMeetingRequest}
+        role="researcher"
+        onClose={closeMeetingChat}
       />
 
       <ChatWidget role="researcher" />

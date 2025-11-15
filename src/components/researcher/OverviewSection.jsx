@@ -9,6 +9,7 @@ const ResearcherOverviewSection = ({
   formatDate,
   formatDateTime,
   onOpenScheduleModal,
+  onOpenChat,
 }) => (
   <div className="space-y-6">
     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -128,6 +129,14 @@ const ResearcherOverviewSection = ({
                       className="btn-secondary text-xs px-4 py-2"
                     >
                       Manage
+                    </button>
+                  )}
+                  {onOpenChat && (
+                    <button
+                      onClick={() => onOpenChat(request)}
+                      className="text-primary-600 hover:text-primary-700 text-xs font-medium"
+                    >
+                      Chat
                     </button>
                   )}
                 </div>
