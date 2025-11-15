@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const STORAGE_KEY = 'curalink_forum_data_v1';
 
@@ -142,8 +142,13 @@ export function useForumData() {
     }));
   }, []);
 
+  const questions = useMemo(
+    () => data.questions.map(mapQuestion),
+    [data.questions]
+  );
+
   return {
-    questions: data.questions.map(mapQuestion),
+    questions,
     communities: data.communities || [],
     addQuestion,
     addReply,

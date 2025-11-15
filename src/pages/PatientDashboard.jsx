@@ -2,16 +2,19 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom';
 import {
   Heart, Users, BookOpen, FileText, MessageCircle, Star,
-  Search, Calendar, MapPin, LogOut, User, X, ExternalLink, Sparkles
+  Search, Calendar, MapPin, LogOut, User, X, ExternalLink, Sparkles,
+  Share2, ClipboardCheck, BookmarkPlus, BookmarkCheck, Loader,
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
 import aiService from '../services/aiService';
 import expertService from '../services/expertService';
 import clinicalTrialService from '../services/clinicalTrialService';
+import publicationService from '../services/publicationService';
 import api from '../services/api';
 import { useForumData } from '../hooks/useForumData';
 import ChatWidget from '../components/ChatWidget';
+import UnifiedSearchModal from '../components/search/UnifiedSearchModal';
 
 const PatientDashboard = () => {
   const navigate = useNavigate();
@@ -45,6 +48,7 @@ const PatientDashboard = () => {
   const [selectedTrial, setSelectedTrial] = useState(null);
   const [isMeetingModalOpen, setIsMeetingModalOpen] = useState(false);
   const [selectedExpert, setSelectedExpert] = useState(null);
+  const [profileModalExpert, setProfileModalExpert] = useState(null);
   const [meetingForm, setMeetingForm] = useState({
     name: '',
     email: '',
@@ -56,7 +60,81 @@ const PatientDashboard = () => {
   const [meetingRequests, setMeetingRequests] = useState([]);
   const [meetingRequestsLoading, setMeetingRequestsLoading] = useState(false);
   const [meetingRequestsError, setMeetingRequestsError] = useState(null);
-  const [aiGeneratingNotes, setAiGeneratingNotes] = useState(false);
+  const [_aiGeneratingNotes, setAiGeneratingNotes] = useState(false);
+  const [isUnifiedSearchOpen, setIsUnifiedSearchOpen] = useState(false);
+  const [favoriteCollections, setFavoriteCollections] = useState({
+    experts: [],
+    trials: [],
+    publications: [],
+  });
+  const [expertCache, setExpertCache] = useState({});
+  const [favoriteTrialsCache, setFavoriteTrialsCache] = useState({});
+  const [favoritePublications, setFavoritePublications] = useState([]);
+  const [favoritesLoading, setFavoritesLoading] = useState(false);
+  const [favoritesError, setFavoritesError] = useState(null);
+  const [selectedFavorites, setSelectedFavorites] = useState(() => ({
+    experts: new Set(),
+    trials: new Set(),
+    publications: new Set(),
+  }));
+  const [exportStatus, setExportStatus] = useState(null);
+  const [isExportingFavorites, setIsExportingFavorites] = useState(false);
+  const pendingTrialFetches = useRef(new Set());
+  const [followProcessingIds, setFollowProcessingIds] = useState(() => new Set());
+
+  const _unifiedSearchContext = useMemo(() => {
+    const conditionValue =
+      userProfile?.condition && userProfile.condition !== 'Not specified'
+        ? userProfile.condition
+        : '';
+    const locationValue = userProfile?.city || userProfile?.country || '';
+    return { condition: conditionValue, location: locationValue };
+  }, [userProfile?.condition, userProfile?.city, userProfile?.country]);
+
+  const favoriteExpertsList = useMemo(
+    () =>
+      favoriteCollections.experts
+        .map((id) => expertCache[id])
+        .filter(Boolean),
+    [favoriteCollections.experts, expertCache]
+  );
+
+  const favoriteTrialsList = useMemo(
+    () =>
+      favoriteCollections.trials
+        .map((id) => favoriteTrialsCache[id])
+        .filter(Boolean),
+    [favoriteCollections.trials, favoriteTrialsCache]
+  );
+
+  const favoritePublicationsList = useMemo(
+    () =>
+      favoriteCollections.publications
+        .map((pmid) => favoritePublications.find((pub) => pub.pmid === pmid))
+        .filter(Boolean),
+    [favoriteCollections.publications, favoritePublications]
+  );
+
+  const selectedFavoritesCount =
+    selectedFavorites.experts.size +
+    selectedFavorites.trials.size +
+    selectedFavorites.publications.size;
+  const hasFavoriteSelections = selectedFavoritesCount > 0;
+
+  const updateFavoriteCollections = useCallback((type, values) => {
+    setFavoriteCollections((prev) => ({
+      ...prev,
+      [type]: values,
+    }));
+    setUserProfile((prev) => {
+      if (!prev) return prev;
+      const nextFavorites = {
+        ...(prev.favorites || {}),
+        [type]: values,
+      };
+      return { ...prev, favorites: nextFavorites };
+    });
+  }, []);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -76,9 +154,17 @@ const PatientDashboard = () => {
           return;
         }
 
-        const favorites = Array.isArray(userData.profile?.favorites?.experts)
-          ? userData.profile.favorites.experts
-          : [];
+        const profileFavorites = {
+          experts: Array.isArray(userData.profile?.favorites?.experts)
+            ? userData.profile.favorites.experts
+            : [],
+          trials: Array.isArray(userData.profile?.favorites?.trials)
+            ? userData.profile.favorites.trials
+            : [],
+          publications: Array.isArray(userData.profile?.favorites?.publications)
+            ? userData.profile.favorites.publications
+            : [],
+        };
 
         setUserProfile({
           name: userData.user.name,
@@ -86,9 +172,10 @@ const PatientDashboard = () => {
           condition: userData.profile?.condition || 'Not specified',
           city: userData.profile?.city,
           country: userData.profile?.country,
-          favorites,
+          favorites: profileFavorites,
         });
-        setFollowedExpertIds(favorites);
+        setFavoriteCollections(profileFavorites);
+        setFollowedExpertIds(profileFavorites.experts);
         setLoading(false);
       } catch (error) {
         console.error('Error fetching user data:', error);
@@ -288,32 +375,45 @@ const handleFollowToggle = async (expert) => {
     return;
   }
 
-  const isFollowed = followedExpertIds.includes(expert.id);
+  const isFollowed = favoriteCollections.experts.includes(expert.id);
+  setFollowProcessingIds((prev) => {
+    const next = new Set(prev);
+    next.add(expert.id);
+    return next;
+  });
 
   try {
     setExpertsError(null);
     if (isFollowed) {
       await api.delete(`/patients/favorites/experts/${expert.id}`);
-      setFollowedExpertIds((prev) => prev.filter((id) => id !== expert.id));
-      setUserProfile((prev) => {
-        if (!prev) return prev;
-        const favorites = new Set(prev.favorites || []);
-        favorites.delete(expert.id);
-        return { ...prev, favorites: Array.from(favorites) };
-      });
+      const nextFavorites = favoriteCollections.experts.filter((id) => id !== expert.id);
+      updateFavoriteCollections('experts', nextFavorites);
+      setFollowedExpertIds(nextFavorites);
+      setSelectedFavorites((prev) => ({
+        ...prev,
+        experts: new Set([...prev.experts].filter((id) => id !== expert.id)),
+      }));
     } else {
       await api.post(`/patients/favorites/experts/${expert.id}`);
-      setFollowedExpertIds((prev) => (prev.includes(expert.id) ? prev : [...prev, expert.id]));
-      setUserProfile((prev) => {
-        if (!prev) return prev;
-        const favorites = new Set(prev.favorites || []);
-        favorites.add(expert.id);
-        return { ...prev, favorites: Array.from(favorites) };
-      });
+      const nextFavorites = favoriteCollections.experts.includes(expert.id)
+        ? favoriteCollections.experts
+        : [...favoriteCollections.experts, expert.id];
+      updateFavoriteCollections('experts', nextFavorites);
+      setFollowedExpertIds(nextFavorites);
+      setExpertCache((prev) => ({
+        ...prev,
+        [expert.id]: expert,
+      }));
     }
   } catch (error) {
     console.error('Failed to toggle follow:', error);
     setExpertsError('Unable to update follow status right now. Please try again.');
+  } finally {
+    setFollowProcessingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(expert.id);
+      return next;
+    });
   }
 };
 
@@ -334,11 +434,249 @@ const closeMeetingModal = () => {
   setSelectedExpert(null);
 };
 
+const handleUnifiedExpertView = (expert) => {
+  openExpertProfile(expert);
+  setIsUnifiedSearchOpen(false);
+};
+
+const handleUnifiedTrialView = (trial) => {
+  setSelectedTrial(trial);
+  setIsUnifiedSearchOpen(false);
+};
+
+const handleUnifiedDiscussionView = (question) => {
+  openDiscussion(question);
+  setIsUnifiedSearchOpen(false);
+};
+
+const handleTrialFavoriteToggle = async (trial) => {
+  if (!trial?.id) return;
+  const trialId = trial.id;
+  const isFavorite = favoriteCollections.trials.includes(trialId);
+
+  try {
+    setFavoritesError(null);
+    if (isFavorite) {
+      await api.delete(`/patients/favorites/trials/${trialId}`);
+      const next = favoriteCollections.trials.filter((id) => id !== trialId);
+      updateFavoriteCollections('trials', next);
+      setSelectedFavorites((prev) => ({
+        ...prev,
+        trials: new Set([...prev.trials].filter((id) => id !== trialId)),
+      }));
+    } else {
+      await api.post(`/patients/favorites/trials/${trialId}`);
+      const next = favoriteCollections.trials.includes(trialId)
+        ? favoriteCollections.trials
+        : [...favoriteCollections.trials, trialId];
+      updateFavoriteCollections('trials', next);
+      setFavoriteTrialsCache((prev) => ({
+        ...prev,
+        [trialId]: trial,
+      }));
+    }
+  } catch (error) {
+    console.error('Failed to update trial favorite:', error);
+    setFavoritesError('Unable to update saved trials right now. Please try again.');
+  }
+};
+
+const handlePublicationFavoriteToggle = async (publication) => {
+  if (!publication?.pmid) return;
+  const pmid = publication.pmid;
+  const isFavorite = favoriteCollections.publications.includes(pmid);
+
+  try {
+    setFavoritesError(null);
+    if (isFavorite) {
+      await Promise.all([
+        api.delete(`/patients/favorites/publications/${pmid}`),
+        publicationService.unsavePublication(pmid),
+      ]);
+      const next = favoriteCollections.publications.filter((id) => id !== pmid);
+      updateFavoriteCollections('publications', next);
+      setFavoritePublications((prev) => prev.filter((pub) => pub.pmid !== pmid));
+      setSelectedFavorites((prev) => ({
+        ...prev,
+        publications: new Set([...prev.publications].filter((id) => id !== pmid)),
+      }));
+    } else {
+      await Promise.all([
+        api.post(`/patients/favorites/publications/${pmid}`),
+        publicationService.savePublication(pmid),
+      ]);
+      const next = favoriteCollections.publications.includes(pmid)
+        ? favoriteCollections.publications
+        : [...favoriteCollections.publications, pmid];
+      updateFavoriteCollections('publications', next);
+    }
+  } catch (error) {
+    console.error('Failed to update publication favorite:', error);
+    setFavoritesError('Unable to update saved publications right now. Please try again.');
+  }
+};
+
+const toggleFavoriteSelection = useCallback((type, id) => {
+  if (!type || !id) return;
+  setSelectedFavorites((prev) => {
+    const nextSet = new Set(prev[type]);
+    if (nextSet.has(id)) {
+      nextSet.delete(id);
+    } else {
+      nextSet.add(id);
+    }
+    return { ...prev, [type]: nextSet };
+  });
+}, []);
+
+const clearFavoriteSelections = useCallback(() => {
+  setSelectedFavorites({
+    experts: new Set(),
+    trials: new Set(),
+    publications: new Set(),
+  });
+  setExportStatus(null);
+}, []);
+
+const buildFavoriteExportSummary = useCallback(() => {
+  const lines = [];
+  const timestamp = new Date().toLocaleString();
+  lines.push('CuraLink Favorites Summary');
+  lines.push(`Generated: ${timestamp}`);
+  lines.push('');
+
+  const expertIds = Array.from(selectedFavorites.experts);
+  if (expertIds.length > 0) {
+    lines.push('Researchers:');
+    expertIds.forEach((id) => {
+      const expert = expertCache[id];
+      if (!expert) return;
+      const specialties = Array.isArray(expert.specialties)
+        ? expert.specialties.slice(0, 3).join(', ')
+        : '';
+      lines.push(
+        `• ${expert.name} — ${expert.institution || 'Institution not specified'}${
+          specialties ? ` (Specialties: ${specialties})` : ''
+        }`
+      );
+    });
+    lines.push('');
+  }
+
+  const trialIds = Array.from(selectedFavorites.trials);
+  if (trialIds.length > 0) {
+    lines.push('Clinical Trials:');
+    trialIds.forEach((id) => {
+      const trial = favoriteTrialsCache[id];
+      if (!trial) return;
+      const location = trial.location || [trial.city, trial.country].filter(Boolean).join(', ');
+      lines.push(
+        `• ${trial.title} — ${trial.phase || 'Phase N/A'} | ${trial.status || 'Status unknown'}${
+          location ? ` | ${location}` : ''
+        }`
+      );
+    });
+    lines.push('');
+  }
+
+  const publicationIds = Array.from(selectedFavorites.publications);
+  if (publicationIds.length > 0) {
+    lines.push('Publications:');
+    publicationIds.forEach((pmid) => {
+      const publication = favoritePublications.find((pub) => pub.pmid === pmid);
+      if (!publication) return;
+      lines.push(`• ${publication.title} (${publication.journal}, ${publication.year || 'Year N/A'})`);
+    });
+    lines.push('');
+  }
+
+  const summary = lines.join('\n').trim();
+  return summary.length > 0 ? summary : '';
+}, [selectedFavorites, expertCache, favoriteTrialsCache, favoritePublications]);
+
+const handleExportFavorites = useCallback(async () => {
+  const summary = buildFavoriteExportSummary();
+  if (!summary) return;
+  setIsExportingFavorites(true);
+  setExportStatus(null);
+  try {
+    await navigator.clipboard.writeText(summary);
+    setExportStatus('Copied selected favorites to your clipboard.');
+  } catch (error) {
+    console.warn('Clipboard write failed, falling back to download.', error);
+    try {
+      const blob = new Blob([summary], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `curalink-favorites-${Date.now()}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setExportStatus('Downloaded favorites summary because clipboard access was blocked.');
+    } catch (fallbackError) {
+      console.error('Failed to export favorites:', fallbackError);
+      setExportStatus('Unable to export favorites. Please try again.');
+    }
+  } finally {
+    setIsExportingFavorites(false);
+  }
+}, [buildFavoriteExportSummary]);
+
+const ensureTrialInCache = useCallback(async (trialId) => {
+  if (!trialId || favoriteTrialsCache[trialId]) return;
+  const fromList = clinicalTrials.find((trial) => trial.id === trialId);
+  if (fromList) {
+    setFavoriteTrialsCache((prev) => ({
+      ...prev,
+      [trialId]: fromList,
+    }));
+    return;
+  }
+
+  if (pendingTrialFetches.current.has(trialId)) return;
+  pendingTrialFetches.current.add(trialId);
+  try {
+    const trialResponse = await clinicalTrialService.fetchClinicalTrialById(trialId);
+    const trialData = trialResponse?.trial || trialResponse;
+    if (trialData) {
+      setFavoriteTrialsCache((prev) => ({
+        ...prev,
+        [trialId]: trialData,
+      }));
+    }
+  } catch (error) {
+    console.warn('Unable to hydrate favorite trial', trialId, error);
+  } finally {
+    pendingTrialFetches.current.delete(trialId);
+  }
+}, [clinicalTrials, favoriteTrialsCache]);
+
+const loadFavoritePublications = useCallback(async () => {
+  if (!favoriteCollections.publications.length) {
+    setFavoritePublications([]);
+    return;
+  }
+
+  const savedResponse = await publicationService.getSavedPublications();
+  const savedList = savedResponse?.publications || [];
+  const filtered = savedList.filter((pub) => favoriteCollections.publications.includes(pub.pmid));
+  setFavoritePublications(filtered);
+}, [favoriteCollections.publications]);
+const openExpertProfile = (expert) => {
+  setProfileModalExpert(expert);
+};
+
+const closeExpertProfile = () => {
+  setProfileModalExpert(null);
+};
+
 const handleRequestMeeting = (expert) => {
   openMeetingModal(expert);
 };
 
-const handleAiAssistNotes = async () => {
+const _handleAiAssistNotes = async () => {
   if (!userProfile?.condition || userProfile.condition === 'Not specified') {
     setMeetingFeedback({
       type: 'warning',
@@ -454,6 +792,16 @@ const handleMeetingSubmit = async (event) => {
           condition: conditionFilter,
         });
         setExperts(fetchedExperts || []);
+        setExpertCache((prev) => {
+          if (!Array.isArray(fetchedExperts)) return prev;
+          const next = { ...prev };
+          fetchedExperts.forEach((expert) => {
+            if (expert?.id) {
+              next[expert.id] = expert;
+            }
+          });
+          return next;
+        });
       } catch (error) {
         console.error('Failed to load experts:', error);
         setExpertsError('Unable to load experts right now. Please try again.');
@@ -502,25 +850,80 @@ const handleMeetingSubmit = async (event) => {
     };
   }, [expertSearch, userProfile, loadExperts]);
 
-  useEffect(() => {
-    if (!userProfile) return;
-    loadClinicalTrials(trialSearchRef.current);
-  }, [userProfile, trialFilters, loadClinicalTrials]);
+useEffect(() => {
+  if (!userProfile) return;
+  loadClinicalTrials(trialSearchRef.current);
+}, [userProfile, trialFilters, loadClinicalTrials]);
 
-  useEffect(() => {
-    if (!userProfile) return;
+useEffect(() => {
+  if (!Array.isArray(clinicalTrials) || clinicalTrials.length === 0) return;
+  setFavoriteTrialsCache((prev) => {
+    const next = { ...prev };
+    clinicalTrials.forEach((trial) => {
+      if (trial?.id) {
+        next[trial.id] = trial;
+      }
+    });
+    return next;
+  });
+}, [clinicalTrials]);
+
+useEffect(() => {
+  favoriteCollections.trials.forEach((trialId) => {
+    ensureTrialInCache(trialId);
+  });
+}, [favoriteCollections.trials, ensureTrialInCache]);
+
+useEffect(() => {
+  if (!userProfile) return;
+  if (trialSearchDebounceRef.current) {
+    clearTimeout(trialSearchDebounceRef.current);
+  }
+  trialSearchDebounceRef.current = setTimeout(() => {
+    loadClinicalTrialsRef.current(trialSearchRef.current);
+  }, 400);
+  return () => {
     if (trialSearchDebounceRef.current) {
       clearTimeout(trialSearchDebounceRef.current);
     }
-    trialSearchDebounceRef.current = setTimeout(() => {
-      loadClinicalTrialsRef.current(trialSearchRef.current);
-    }, 400);
-    return () => {
-      if (trialSearchDebounceRef.current) {
-        clearTimeout(trialSearchDebounceRef.current);
+  };
+}, [trialSearch, userProfile]);
+
+useEffect(() => {
+  if (activeTab !== 'favorites') return;
+  let isMounted = true;
+  const hydrateFavorites = async () => {
+    setFavoritesLoading(true);
+    setFavoritesError(null);
+    try {
+      await loadFavoritePublications();
+      await Promise.all(favoriteCollections.trials.map((id) => ensureTrialInCache(id)));
+    } catch (error) {
+      if (isMounted) {
+        console.error('Favorites hydration failed:', error);
+        setFavoritesError('Unable to load favorites right now. Please try again.');
       }
-    };
-  }, [trialSearch, userProfile]);
+    } finally {
+      if (isMounted) {
+        setFavoritesLoading(false);
+      }
+    }
+  };
+  hydrateFavorites();
+  return () => {
+    isMounted = false;
+  };
+}, [activeTab, favoriteCollections.trials, loadFavoritePublications, ensureTrialInCache]);
+
+useEffect(() => {
+  setSelectedFavorites((prev) => ({
+    experts: new Set([...prev.experts].filter((id) => favoriteCollections.experts.includes(id))),
+    trials: new Set([...prev.trials].filter((id) => favoriteCollections.trials.includes(id))),
+    publications: new Set(
+      [...prev.publications].filter((id) => favoriteCollections.publications.includes(id))
+    ),
+  }));
+}, [favoriteCollections.experts, favoriteCollections.trials, favoriteCollections.publications]);
 
   const sidebarItems = [
     { id: 'overview', label: 'Overview', icon: <Heart /> },
@@ -531,7 +934,7 @@ const handleMeetingSubmit = async (event) => {
     { id: 'favorites', label: 'My Favorites', icon: <Star /> },
   ];
 
-  const mockPublications = [
+  const _mockPublications = [
     { id: 1, title: 'Recent Advances in Cancer Immunotherapy', journal: 'Nature Medicine', year: 2024 },
     { id: 2, title: 'Targeted Therapy for Glioblastoma', journal: 'The Lancet', year: 2024 },
     { id: 3, title: 'AI in Clinical Trial Matching', journal: 'Science', year: 2023 },
@@ -636,7 +1039,7 @@ const handleMeetingSubmit = async (event) => {
             <div className="card">
               <h3 className="text-xl font-semibold mb-4">Recent Activity</h3>
               <div className="space-y-3">
-                {meetingRequests.slice(0, 3).map((request, index) => (
+                {meetingRequests.slice(0, 3).map((request) => (
                   <div key={request.id} className="flex items-center justify-between py-2 border-b">
                     <span className="text-sm text-gray-600">
                       {request.status === 'accepted'
@@ -705,6 +1108,7 @@ const handleMeetingSubmit = async (event) => {
               <div className="space-y-4">
                 {experts.map((expert) => {
                   const isFollowed = expert.id && followedExpertIds.includes(expert.id);
+                  const isFollowProcessing = expert.id ? followProcessingIds.has(expert.id) : false;
                   return (
                     <div
                       key={expert.id || expert.name}
@@ -749,18 +1153,37 @@ const handleMeetingSubmit = async (event) => {
                           )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <button
-                          onClick={() => handleFollowToggle(expert)}
-                          disabled={expert.source !== 'platform'}
-                          className={`px-4 py-2 rounded-full text-sm font-semibold transition ${
-                            isFollowed
-                              ? 'bg-primary-100 text-primary-700 hover:bg-primary-200'
-                              : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
-                          } ${expert.source !== 'platform' ? 'opacity-60 cursor-not-allowed' : ''}`}
-                        >
-                          {isFollowed ? 'Following' : 'Follow'}
-                        </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => openExpertProfile(expert)}
+                        className="btn-secondary text-sm px-4 py-2"
+                      >
+                        View Profile
+                      </button>
+                      <button
+                        onClick={() => handleFollowToggle(expert)}
+                        disabled={expert.source !== 'platform' || isFollowProcessing}
+                        className={`px-4 py-2 rounded-full text-sm font-semibold transition ${
+                          isFollowed
+                            ? 'bg-primary-100 text-primary-700 hover:bg-primary-200'
+                            : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
+                        } ${
+                          expert.source !== 'platform' || isFollowProcessing
+                            ? 'opacity-60 cursor-not-allowed'
+                            : ''
+                        }`}
+                      >
+                        {isFollowProcessing ? (
+                          <span className="inline-flex items-center gap-2">
+                            <Loader className="w-4 h-4 animate-spin" />
+                            Updating...
+                          </span>
+                        ) : isFollowed ? (
+                          'Following'
+                        ) : (
+                          'Follow'
+                        )}
+                      </button>
                         <button
                           onClick={() => openMeetingModal(expert)}
                           className="btn-primary px-4 py-2 rounded-full text-sm font-semibold"
@@ -789,7 +1212,7 @@ const handleMeetingSubmit = async (event) => {
                 </div>
               ) : meetingRequests.length === 0 ? (
                 <div className="card text-sm text-gray-500 py-6 text-center">
-                  You haven’t requested any meetings yet.
+                  You haven't requested any meetings yet.
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -951,6 +1374,7 @@ const handleMeetingSubmit = async (event) => {
                     : trial.location ||
                       [trial.city, trial.country].filter(Boolean).join(', ') ||
                       'Location not specified';
+                  const isFavoriteTrial = favoriteCollections.trials.includes(trial.id);
                   return (
                     <div key={trial.id} className="card p-6">
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1014,6 +1438,17 @@ const handleMeetingSubmit = async (event) => {
                               Starts {formatDate(trial.startDate)}
                             </div>
                           )}
+                          <button
+                            onClick={() => handleTrialFavoriteToggle(trial)}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                          >
+                            {isFavoriteTrial ? (
+                              <BookmarkCheck className="h-3.5 w-3.5" />
+                            ) : (
+                              <BookmarkPlus className="h-3.5 w-3.5" />
+                            )}
+                            {isFavoriteTrial ? 'Saved to favorites' : 'Save to favorites'}
+                          </button>
                           <button
                             onClick={() => openTrialDetails(trial)}
                             className="btn-primary rounded-full px-5 py-2 text-sm font-semibold"
@@ -1118,88 +1553,284 @@ const handleMeetingSubmit = async (event) => {
         );
 
       case 'favorites':
-        const favoriteExperts = experts.filter((expert) => followedExpertIds.includes(expert.id));
-
         return (
           <div className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-bold">My Favorites</h2>
-              <p className="text-sm text-gray-500 mt-1">Your followed health experts and saved items</p>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold">My Favorites</h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  Shortlist experts, trials, and publications to review with your care team.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <button
+                  onClick={clearFavoriteSelections}
+                  disabled={!hasFavoriteSelections}
+                  className="btn-secondary text-sm disabled:opacity-50"
+                >
+                  Clear selection
+                </button>
+                <button
+                  onClick={handleExportFavorites}
+                  disabled={!hasFavoriteSelections || isExportingFavorites}
+                  className="btn-primary inline-flex items-center justify-center gap-2 text-sm disabled:opacity-50"
+                >
+                  <Share2 className="w-4 h-4" />
+                  {isExportingFavorites ? 'Preparing...' : 'Export selected'}
+                </button>
+              </div>
             </div>
 
-            {/* Favorite Experts Section */}
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Followed Health Experts</h3>
-              {expertsLoading ? (
-                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                  {[1, 2, 3].map((item) => (
-                    <div key={item} className="card h-32 animate-pulse bg-gray-100" />
-                  ))}
-                </div>
-              ) : favoriteExperts.length === 0 ? (
-                <div className="card text-center py-12">
-                  <Star className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                  <p className="text-gray-600 mb-2">No favorite experts yet</p>
-                  <p className="text-sm text-gray-500">
-                    Visit the Health Experts tab to follow researchers
-                  </p>
-                  <button
-                    onClick={() => setActiveTab('experts')}
-                    className="mt-4 btn-primary px-4 py-2 text-sm"
-                  >
-                    Browse Experts
-                  </button>
-                </div>
-              ) : (
-                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                  {favoriteExperts.map((expert) => (
-                    <div key={expert.id} className="card hover:shadow-lg transition-shadow">
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="bg-primary-100 rounded-full p-3">
-                          <Users className="w-6 h-6 text-primary-600" />
-                        </div>
-                        <button
-                          onClick={() => handleFollowToggle(expert)}
-                          className="text-yellow-500 hover:text-yellow-600"
-                        >
-                          <Star className="w-5 h-5 fill-current" />
-                        </button>
-                      </div>
-                      <h4 className="font-semibold text-gray-900 mb-1">{expert.name}</h4>
-                      <p className="text-sm text-gray-600 mb-2">{expert.institution || 'Institution not specified'}</p>
-                      {expert.specialties && expert.specialties.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mb-3">
-                          {expert.specialties.slice(0, 2).map((specialty, idx) => (
-                            <span
-                              key={idx}
-                              className="inline-block bg-primary-50 text-primary-700 text-xs px-2 py-1 rounded"
-                            >
-                              {specialty}
-                            </span>
-                          ))}
-                          {expert.specialties.length > 2 && (
-                            <span className="inline-block text-xs text-gray-500 px-2 py-1">
-                              +{expert.specialties.length - 2} more
-                            </span>
-                          )}
-                        </div>
-                      )}
+            {exportStatus && (
+              <div className="flex items-center gap-2 rounded-xl border border-primary-100 bg-primary-50 px-4 py-3 text-sm text-primary-700">
+                <ClipboardCheck className="w-4 h-4" />
+                <span>{exportStatus}</span>
+              </div>
+            )}
+
+            {favoritesError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                {favoritesError}
+              </div>
+            )}
+
+            {favoritesLoading ? (
+              <div className="card py-12 text-center text-sm text-gray-600">
+                Gathering your saved experts, trials, and publications...
+              </div>
+            ) : (
+              <div className="space-y-10">
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-gray-900">Followed Health Experts</h3>
+                    <p className="text-xs text-gray-500">
+                      {favoriteExpertsList.length} saved
+                    </p>
+                  </div>
+                  {expertsLoading && favoriteExpertsList.length === 0 ? (
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                      {[1, 2, 3].map((item) => (
+                        <div key={item} className="card h-32 animate-pulse bg-gray-100" />
+                      ))}
+                    </div>
+                  ) : favoriteExpertsList.length === 0 ? (
+                    <div className="card text-center py-12">
+                      <Star className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                      <p className="text-gray-600 mb-2">No favorite experts yet</p>
+                      <p className="text-sm text-gray-500">
+                        Visit the Health Experts tab to follow researchers.
+                      </p>
                       <button
-                        onClick={() => handleRequestMeeting(expert)}
-                        className="w-full btn-primary text-sm py-2 mt-2"
+                        onClick={() => setActiveTab('experts')}
+                        className="mt-4 btn-primary px-4 py-2 text-sm"
                       >
-                        Request Meeting
+                        Browse Experts
                       </button>
                     </div>
-                  ))}
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                      {favoriteExpertsList.map((expert) => {
+                        const isFavoriteFollowProcessing = followProcessingIds.has(expert.id);
+                        return (
+                          <div key={expert.id} className="card hover:shadow-lg transition-shadow">
+                            <div className="flex items-start justify-between mb-3">
+                              <div className="bg-primary-100 rounded-full p-3">
+                                <Users className="w-6 h-6 text-primary-600" />
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <label className="inline-flex items-center gap-1 text-xs text-gray-500">
+                                  <input
+                                    type="checkbox"
+                                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                    checked={selectedFavorites.experts.has(expert.id)}
+                                    onChange={() => toggleFavoriteSelection('experts', expert.id)}
+                                  />
+                                  Select
+                                </label>
+                                <button
+                                  onClick={() => handleFollowToggle(expert)}
+                                  className={`text-yellow-500 hover:text-yellow-600 ${
+                                    isFavoriteFollowProcessing ? 'opacity-60 cursor-wait' : ''
+                                  }`}
+                                  title="Unfollow"
+                                  disabled={isFavoriteFollowProcessing}
+                                >
+                                  {isFavoriteFollowProcessing ? (
+                                    <Loader className="w-4 h-4 animate-spin text-gray-400" />
+                                  ) : (
+                                    <Star className="w-5 h-5 fill-current" />
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          <h4 className="font-semibold text-gray-900 mb-1">{expert.name}</h4>
+                          <p className="text-sm text-gray-600 mb-2">
+                            {expert.institution || 'Institution not specified'}
+                          </p>
+                          {expert.specialties && expert.specialties.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mb-3">
+                              {expert.specialties.slice(0, 2).map((specialty, idx) => (
+                                <span
+                                  key={idx}
+                                  className="inline-block bg-primary-50 text-primary-700 text-xs px-2 py-1 rounded"
+                                >
+                                  {specialty}
+                                </span>
+                              ))}
+                              {expert.specialties.length > 2 && (
+                                <span className="inline-block text-xs text-gray-500 px-2 py-1">
+                                  +{expert.specialties.length - 2} more
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          <button
+                            onClick={() => handleRequestMeeting(expert)}
+                            className="w-full btn-primary text-sm py-2 mt-2"
+                          >
+                            Request Meeting
+                          </button>
+                        </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
 
-            {/* Placeholder for future features */}
-    
-    
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-gray-900">Saved Clinical Trials</h3>
+                    <p className="text-xs text-gray-500">
+                      {favoriteTrialsList.length} saved
+                    </p>
+                  </div>
+                  {favoriteTrialsList.length === 0 ? (
+                    <div className="card text-center py-10">
+                      <p className="text-sm text-gray-600">
+                        You haven't saved any trials yet. Browse the Clinical Trials tab to shortlist studies.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {favoriteTrialsList.map((trial) => (
+                        <div key={trial.id} className="card p-5">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="flex-1">
+                              <div className="flex flex-wrap items-center gap-2 mb-2">
+                                {trial.status && (
+                                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+                                    {trial.status}
+                                  </span>
+                                )}
+                                {trial.phase && (
+                                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+                                    {trial.phase}
+                                  </span>
+                                )}
+                              </div>
+                              <h4 className="text-lg font-semibold text-gray-900">{trial.title}</h4>
+                              <p className="text-sm text-gray-600 mt-1">
+                                {trial.condition || 'Condition not specified'}
+                              </p>
+                              <p className="text-xs text-gray-500 mt-1">
+                                {trial.location ||
+                                  [trial.city, trial.country].filter(Boolean).join(', ') ||
+                                  'Location not specified'}
+                              </p>
+                            </div>
+                            <div className="flex flex-col items-start gap-2 sm:items-end">
+                              <label className="inline-flex items-center gap-1 text-xs text-gray-500">
+                                <input
+                                  type="checkbox"
+                                  className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                  checked={selectedFavorites.trials.has(trial.id)}
+                                  onChange={() => toggleFavoriteSelection('trials', trial.id)}
+                                />
+                                Select
+                              </label>
+                              <button
+                                onClick={() => handleTrialFavoriteToggle(trial)}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                              >
+                                <BookmarkCheck className="h-3.5 w-3.5" />
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-gray-900">Saved Publications</h3>
+                    <p className="text-xs text-gray-500">
+                      {favoritePublicationsList.length} saved
+                    </p>
+                  </div>
+                  {favoritePublicationsList.length === 0 ? (
+                    <div className="card text-center py-10">
+                      <p className="text-sm text-gray-600">
+                        Saved papers will appear here after you bookmark them from the Publications page.
+                      </p>
+                      <button
+                        onClick={() => navigate('/publications')}
+                        className="mt-4 btn-secondary text-sm px-4 py-2"
+                      >
+                        Search Publications
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {favoritePublicationsList.map((publication) => (
+                        <div key={publication.pmid} className="card p-5">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="flex-1">
+                              <p className="text-xs text-gray-500 mb-1">
+                                PMID: {publication.pmid}
+                              </p>
+                              <h4 className="text-lg font-semibold text-gray-900">
+                                {publication.title}
+                              </h4>
+                              <p className="text-sm text-gray-600">
+                                {publication.journal} • {publication.year || 'Year N/A'}
+                              </p>
+                              {publication.aiSummary && (
+                                <p className="text-sm text-gray-500 mt-2 line-clamp-2">
+                                  {publication.aiSummary}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex flex-col items-start gap-2 sm:items-end">
+                              <label className="inline-flex items-center gap-1 text-xs text-gray-500">
+                                <input
+                                  type="checkbox"
+                                  className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                  checked={selectedFavorites.publications.has(publication.pmid)}
+                                  onChange={() =>
+                                    toggleFavoriteSelection('publications', publication.pmid)
+                                  }
+                                />
+                                Select
+                              </label>
+                              <button
+                                onClick={() => handlePublicationFavoriteToggle(publication)}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                              >
+                                <BookmarkCheck className="h-3.5 w-3.5" />
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         );
 
@@ -1266,6 +1897,26 @@ const handleMeetingSubmit = async (event) => {
 
         {/* Main Content */}
         <div className="flex-1 p-8 ml-64">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-8">
+            <div>
+              <p className="text-sm text-gray-500">Unified intelligence</p>
+              <h1 className="text-2xl font-semibold text-gray-900">
+                Welcome back, {userProfile?.name?.split?.(' ')[0] || 'Patient'}
+              </h1>
+              <p className="text-sm text-gray-500">
+                Run a single search to see ranked researchers, trials, and discussions.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setIsUnifiedSearchOpen(true)}
+                className="btn-primary inline-flex items-center gap-2 px-5 py-2 rounded-full"
+              >
+                <Sparkles className="w-4 h-4" />
+                Unified Search
+              </button>
+            </div>
+          </div>
           {renderContent()}
         </div>
       </div>
@@ -1346,6 +1997,143 @@ const handleMeetingSubmit = async (event) => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {profileModalExpert && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm">
+          <div className="relative w-full max-w-3xl rounded-3xl bg-white p-8 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={closeExpertProfile}
+              className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
+              aria-label="Close expert profile"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="space-y-6">
+              <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">Researcher</p>
+                  <h3 className="text-3xl font-semibold text-gray-900">{profileModalExpert.name}</h3>
+                  <p className="text-sm text-gray-600 mt-2">{profileModalExpert.institution}</p>
+                  <p className="text-xs text-gray-500">{profileModalExpert.location}</p>
+                </div>
+                <div className="flex flex-col items-start md:items-end gap-2">
+                  <span
+                    className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
+                      profileModalExpert.availableForMeetings
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    {profileModalExpert.availableForMeetings
+                      ? 'Available for Meetings'
+                      : 'Meeting by Referral'}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        openMeetingModal(profileModalExpert);
+                        closeExpertProfile();
+                      }}
+                      className="btn-primary px-4 py-2 text-sm font-semibold"
+                    >
+                      Request Meeting
+                    </button>
+                    <button
+                      onClick={closeExpertProfile}
+                      className="btn-secondary px-4 py-2 text-sm font-semibold"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {Array.isArray(profileModalExpert.specialties) && profileModalExpert.specialties.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-900 mb-2">Specialties</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {profileModalExpert.specialties.map((spec) => (
+                      <span
+                        key={`${profileModalExpert.id}-${spec}`}
+                        className="rounded-full bg-primary-50 text-primary-700 text-xs font-medium px-3 py-1"
+                      >
+                        {spec}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {profileModalExpert.researchInterests && (
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-900 mb-2">Research Focus</h4>
+                  <p className="text-sm text-gray-700 leading-relaxed">
+                    {profileModalExpert.researchInterests}
+                  </p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="rounded-2xl border p-4">
+                  <p className="text-xs uppercase tracking-wide text-gray-500">Publications</p>
+                  <p className="text-2xl font-semibold text-gray-900">
+                    {profileModalExpert.publicationsCount || profileModalExpert.publications?.length || 0}
+                  </p>
+                  <p className="text-xs text-gray-500">reported on profile</p>
+                </div>
+                <div className="rounded-2xl border p-4">
+                  <p className="text-xs uppercase tracking-wide text-gray-500">Email</p>
+                  <p className="text-sm font-medium text-gray-900">
+                    {profileModalExpert.email || 'Not shared'}
+                  </p>
+                </div>
+                <div className="rounded-2xl border p-4">
+                  <p className="text-xs uppercase tracking-wide text-gray-500">Source</p>
+                  <p className="text-sm font-medium text-gray-900 capitalize">
+                    {profileModalExpert.source || 'Platform'}
+                  </p>
+                </div>
+              </div>
+
+              {Array.isArray(profileModalExpert.publications) &&
+                profileModalExpert.publications.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-semibold text-gray-900 mb-2">
+                      Highlighted Publications
+                    </h4>
+                    <div className="space-y-3">
+                      {profileModalExpert.publications.slice(0, 3).map((pub, index) => {
+                        const title = typeof pub === 'string' ? pub : pub.title;
+                        const journal = pub.journal || pub.source || '';
+                        const year = pub.year || '';
+                        const link = pub.link || pub.url;
+                        return (
+                          <div key={`${profileModalExpert.id}-pub-${index}`} className="border rounded-2xl p-4">
+                            <p className="text-sm font-semibold text-gray-900">{title || 'Untitled publication'}</p>
+                            <p className="text-xs text-gray-500">
+                              {[journal, year].filter(Boolean).join(' • ')}
+                            </p>
+                            {link && (
+                              <a
+                                href={link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 mt-2"
+                              >
+                                View Source
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+            </div>
           </div>
         </div>
       )}
@@ -1718,9 +2506,26 @@ const handleMeetingSubmit = async (event) => {
           </div>
         </div>
       )}
+
+      <UnifiedSearchModal
+        isOpen={isUnifiedSearchOpen}
+        context={{
+          condition:
+            userProfile?.condition && userProfile.condition !== 'Not specified'
+              ? userProfile.condition
+              : '',
+          location: userProfile?.city || userProfile?.country || '',
+        }}
+        onClose={() => setIsUnifiedSearchOpen(false)}
+        onViewExpert={handleUnifiedExpertView}
+        onViewTrial={handleUnifiedTrialView}
+        onViewDiscussion={handleUnifiedDiscussionView}
+      />
       <ChatWidget role="patient" />
     </>
   );
 };
 
 export default PatientDashboard;
+
+
