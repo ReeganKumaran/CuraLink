@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Heart,
   Users,
@@ -120,6 +120,7 @@ const buildGeneratedTrialEligibility = (form) => {
 
 const ResearcherDashboard = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [activeTab, setActiveTab] = useState('overview');
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -784,14 +785,47 @@ const resetTrialForm = useCallback(() => {
     trialForm.isRemote,
   ]);
 
-  const sidebarItems = [
-    { id: 'overview', label: 'Overview', icon: <Heart className="w-4 h-4" /> },
-    { id: 'trials', label: 'My Clinical Trials', icon: <FileText className="w-4 h-4" /> },
-    { id: 'collaborators', label: 'Collaborators', icon: <Users className="w-4 h-4" /> },
-    { id: 'forums', label: 'Forums', icon: <MessageCircle className="w-4 h-4" /> },
-    { id: 'publications', label: 'My Publications', icon: <TrendingUp className="w-4 h-4" /> },
-    { id: 'favorites', label: 'Favorites', icon: <Star className="w-4 h-4" /> },
-  ];
+  const sidebarItems = useMemo(
+    () => [
+      { id: 'overview', label: 'Overview', icon: <Heart className="w-4 h-4" /> },
+      { id: 'trials', label: 'My Clinical Trials', icon: <FileText className="w-4 h-4" /> },
+      { id: 'collaborators', label: 'Collaborators', icon: <Users className="w-4 h-4" /> },
+      { id: 'forums', label: 'Forums', icon: <MessageCircle className="w-4 h-4" /> },
+      { id: 'publications', label: 'My Publications', icon: <TrendingUp className="w-4 h-4" /> },
+      { id: 'favorites', label: 'Favorites', icon: <Star className="w-4 h-4" /> },
+    ],
+    []
+  );
+
+  const handleTabChange = useCallback(
+    (tabId) => {
+      if (!sidebarItems.some((item) => item.id === tabId)) {
+        return;
+      }
+      setActiveTab(tabId);
+      const params = new URLSearchParams(location.search);
+      if (tabId === 'overview') {
+        params.delete('tab');
+      } else {
+        params.set('tab', tabId);
+      }
+      const query = params.toString();
+      navigate(`/researcher/dashboard${query ? `?${query}` : ''}`, { replace: true });
+    },
+    [location.search, navigate, sidebarItems]
+  );
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedTab = params.get('tab');
+    if (requestedTab && sidebarItems.some((item) => item.id === requestedTab)) {
+      if (requestedTab !== activeTab) {
+        setActiveTab(requestedTab);
+      }
+    } else if (!requestedTab && activeTab !== 'overview') {
+      setActiveTab('overview');
+    }
+  }, [location.search, sidebarItems, activeTab]);
 
   const trialStats = useMemo(() => {
     if (!Array.isArray(trials) || trials.length === 0) {
@@ -1159,8 +1193,7 @@ const resetTrialForm = useCallback(() => {
           />
         );
       case 'publications':
-        navigate('/publications');
-        return null;
+        return <ResearcherPublicationsSection publications={mockPublications} />;
       case 'favorites':
         return <ResearcherFavoritesSection items={favoriteItems} />;
       default:
@@ -1189,7 +1222,7 @@ const resetTrialForm = useCallback(() => {
           userProfile={userProfile}
           sidebarItems={sidebarItems}
           activeTab={activeTab}
-          onSelectTab={setActiveTab}
+          onSelectTab={handleTabChange}
           onLogout={handleLogout}
         />
         <main className="flex-1 ml-64 py-8 px-6 lg:px-10 space-y-6">

@@ -92,6 +92,23 @@ const computeDiscussionScore = (question, keywords, context) => {
   return clampScore(score);
 };
 
+const mergeQueryWithContext = (rawQuery = '', context = {}) => {
+  const trimmedQuery = rawQuery.trim();
+  const condition = typeof context.condition === 'string' ? context.condition.trim() : '';
+  if (!condition) {
+    return trimmedQuery;
+  }
+  if (!trimmedQuery) {
+    return condition;
+  }
+  const lowerQuery = trimmedQuery.toLowerCase();
+  const lowerCondition = condition.toLowerCase();
+  if (lowerQuery.includes(lowerCondition)) {
+    return trimmedQuery;
+  }
+  return `${trimmedQuery} ${condition}`.trim();
+};
+
 export function useUnifiedSearch(context = {}) {
   const { questions } = useForumData();
   const [results, setResults] = useState({ experts: [], trials: [], discussions: [] });
@@ -100,7 +117,8 @@ export function useUnifiedSearch(context = {}) {
 
   const runSearch = useCallback(
     async (query) => {
-      const keywords = tokenize(query.trim());
+      const mergedQuery = mergeQueryWithContext(query, context);
+      const keywords = tokenize(mergedQuery);
       if (keywords.length === 0) {
         setResults({ experts: [], trials: [], discussions: [] });
         setError('Enter at least one keyword');
@@ -112,8 +130,17 @@ export function useUnifiedSearch(context = {}) {
 
       try {
         const [expertResponse, trialResponse] = await Promise.all([
-          expertService.fetchExperts({ search: query, condition: context?.condition }),
-          clinicalTrialService.fetchClinicalTrials({ search: query, condition: context?.condition, limit: 40 }),
+          expertService.fetchExperts({
+            search: mergedQuery,
+            condition: context?.condition,
+            location: context?.location,
+            limit: 40,
+          }),
+          clinicalTrialService.fetchClinicalTrials({
+            search: mergedQuery,
+            condition: context?.condition,
+            limit: 40,
+          }),
         ]);
 
         const experts = (expertResponse.experts || [])

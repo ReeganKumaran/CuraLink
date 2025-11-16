@@ -1,9 +1,11 @@
 import api from './api';
 
-export async function fetchExperts({ search, condition }) {
+export async function fetchExperts({ search, condition, location, limit } = {}) {
   const params = new URLSearchParams();
   if (search) params.append('search', search);
   if (condition) params.append('condition', condition);
+  if (location) params.append('location', location);
+  if (limit) params.append('limit', String(limit));
 
   const query = params.toString();
   const url = query ? `/experts?${query}` : '/experts';

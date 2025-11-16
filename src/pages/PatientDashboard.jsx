@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Heart, Users, BookOpen, FileText, MessageCircle, Star,
   Search, Calendar, MapPin, LogOut, User, X, ExternalLink, Sparkles,
-  Share2, ClipboardCheck, BookmarkPlus, BookmarkCheck, Loader,
+  Share2, ClipboardCheck, BookmarkPlus, BookmarkCheck, Loader, ArrowRight,
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
@@ -53,6 +53,18 @@ const formatDistanceLabel = (distanceKm) => {
     return `${distanceKm.toFixed(1)} km away`;
   }
   return `${Math.round(distanceKm * 1000)} m away`;
+};
+
+const MatchScoreBadge = ({ score }) => {
+  if (!Number.isFinite(score)) {
+    return null;
+  }
+  const rounded = Math.max(1, Math.min(100, Math.round(score)));
+  return (
+    <span className="inline-flex items-center rounded-full bg-fuchsia-50 text-fuchsia-700 text-xs font-semibold px-2.5 py-0.5">
+      {rounded}% match
+    </span>
+  );
 };
 
 const computeLocationScore = (fields = [], patientLocation = {}, extras = {}) => {
@@ -163,6 +175,7 @@ const formatLastUpdatedLabel = (timestamp) => {
 
 const PatientDashboard = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [activeTab, setActiveTab] = useState('overview');
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -261,6 +274,21 @@ const PatientDashboard = () => {
     }),
     [userProfile?.city, userProfile?.country, userProfile?.latitude, userProfile?.longitude]
   );
+
+  const topMatchExperts = useMemo(() => {
+    if (!Array.isArray(experts) || experts.length === 0) {
+      return [];
+    }
+    const sorted = [...experts].sort((a, b) => {
+      const aScore = Number.isFinite(a.matchScore) ? a.matchScore : -1;
+      const bScore = Number.isFinite(b.matchScore) ? b.matchScore : -1;
+      if (aScore === bScore) {
+        return 0;
+      }
+      return bScore - aScore;
+    });
+    return sorted.slice(0, 3);
+  }, [experts]);
 
   const applyExpertLocationSort = useCallback(
     (items = []) =>
@@ -1036,9 +1064,12 @@ const handleMeetingSubmit = async (event) => {
             ? userProfile.condition
             : undefined;
 
+        const locationHint = [userProfile.city, userProfile.country].filter(Boolean).join(', ') || undefined;
+
         const { experts: fetchedExperts } = await expertService.fetchExperts({
           search: term,
           condition: conditionFilter,
+          location: locationHint,
         });
         const sortedExperts = applyExpertLocationSort(fetchedExperts || []);
         setExperts(sortedExperts);
@@ -1240,14 +1271,48 @@ useEffect(() => {
   }));
 }, [favoriteCollections.experts, favoriteCollections.trials, favoriteCollections.publications]);
 
-  const sidebarItems = [
-    { id: 'overview', label: 'Overview', icon: <Heart /> },
-    { id: 'experts', label: 'Health Experts', icon: <Users /> },
-    { id: 'trials', label: 'Clinical Trials', icon: <FileText /> },
-    { id: 'publications', label: 'Publications', icon: <BookOpen /> },
-    { id: 'forums', label: 'Forums', icon: <MessageCircle /> },
-    { id: 'favorites', label: 'My Favorites', icon: <Star /> },
-  ];
+  const sidebarItems = useMemo(
+    () => [
+      { id: 'overview', label: 'Overview', icon: <Heart /> },
+      { id: 'experts', label: 'Health Experts', icon: <Users /> },
+      { id: 'trials', label: 'Clinical Trials', icon: <FileText /> },
+      { id: 'publications', label: 'Publications', icon: <BookOpen /> },
+      { id: 'forums', label: 'Forums', icon: <MessageCircle /> },
+      { id: 'favorites', label: 'My Favorites', icon: <Star /> },
+    ],
+    []
+  );
+
+  const handleTabChange = useCallback(
+    (tabId) => {
+      if (!sidebarItems.some((item) => item.id === tabId)) {
+        return;
+      }
+
+      setActiveTab(tabId);
+      const params = new URLSearchParams(location.search);
+      if (tabId === 'overview') {
+        params.delete('tab');
+      } else {
+        params.set('tab', tabId);
+      }
+      const query = params.toString();
+      navigate(`/patient/dashboard${query ? `?${query}` : ''}`, { replace: true });
+    },
+    [location.search, navigate, sidebarItems]
+  );
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedTab = params.get('tab');
+    if (requestedTab && sidebarItems.some((item) => item.id === requestedTab)) {
+      if (requestedTab !== activeTab) {
+        setActiveTab(requestedTab);
+      }
+    } else if (!requestedTab && activeTab !== 'overview') {
+      setActiveTab('overview');
+    }
+  }, [location.search, sidebarItems, activeTab]);
 
   const _mockPublications = [
     { id: 1, title: 'Recent Advances in Cancer Immunotherapy', journal: 'Nature Medicine', year: 2024 },
@@ -1276,6 +1341,69 @@ useEffect(() => {
                 <p className="text-3xl font-bold text-primary-600">{meetingRequests.length}</p>
                 <p className="text-sm text-gray-500">Total requests</p>
               </div>
+            </div>
+
+            <div className="card">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                <div>
+                  <h3 className="text-xl font-semibold text-gray-900">Top expert matches</h3>
+                  <p className="text-sm text-gray-500">
+                    Tailored for {userProfile?.condition || 'your profile'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleTabChange('experts')}
+                  className="inline-flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700"
+                >
+                  View all matches
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+              {expertsLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3].map((item) => (
+                    <div key={item} className="h-16 rounded-2xl bg-gray-100 animate-pulse" />
+                  ))}
+                </div>
+              ) : topMatchExperts.length === 0 ? (
+                <div className="text-sm text-gray-500 text-center py-6">
+                  We’ll show personalized expert matches once you add your condition or follow a few experts.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {topMatchExperts.map((expert) => (
+                    <div
+                      key={expert.id || expert.name}
+                      className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 border border-gray-100 rounded-2xl px-4 py-3"
+                    >
+                      <div>
+                        <p className="font-semibold text-gray-900">{expert.name || 'Expert pending'}</p>
+                        <p className="text-sm text-gray-600">
+                          {expert.institution || 'Institution not specified'}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {(expert.specialties || []).slice(0, 2).join(', ') ||
+                            expert.researchInterests ||
+                            'Specialty not listed'}
+                        </p>
+                      </div>
+                      <div className="flex flex-col items-start md:items-end gap-2">
+                        <MatchScoreBadge score={expert.matchScore} />
+                        {Number.isFinite(expert.distanceKm) ? (
+                          <span className="text-xs text-gray-500">
+                            {formatDistanceLabel(expert.distanceKm)}
+                          </span>
+                        ) : (
+                          expert.locationMatchLabel && (
+                            <span className="text-xs text-gray-500">{expert.locationMatchLabel}</span>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="card">
@@ -1354,7 +1482,7 @@ useEffect(() => {
               )}
               {meetingRequests.length > 5 && (
                 <button
-                  onClick={() => setActiveTab('experts')}
+                  onClick={() => handleTabChange('experts')}
                   className="mt-4 text-primary-600 hover:text-primary-700 text-sm font-medium"
                 >
                   View all {meetingRequests.length} requests →
@@ -1470,6 +1598,7 @@ useEffect(() => {
                         <div>
                           <div className="flex items-center gap-2">
                             <h3 className="font-semibold text-lg">{expert.name}</h3>
+                            <MatchScoreBadge score={expert.matchScore} />
                             {expert.source === 'external' && (
                               <span className="text-xs rounded-full bg-gray-100 text-gray-600 px-2 py-0.5">
                                 External
@@ -2036,7 +2165,7 @@ useEffect(() => {
                         Visit the Health Experts tab to follow researchers.
                       </p>
                       <button
-                        onClick={() => setActiveTab('experts')}
+                        onClick={() => handleTabChange('experts')}
                         className="mt-4 btn-primary px-4 py-2 text-sm"
                       >
                         Browse Experts
@@ -2312,7 +2441,7 @@ useEffect(() => {
             {sidebarItems.map(item => (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => handleTabChange(item.id)}
                 className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg mb-1 transition-colors ${
                   activeTab === item.id
                     ? 'bg-primary-100 text-primary-700'

@@ -61,19 +61,19 @@ const Publications = () => {
 
   const sidebarItems = userProfile?.role === 'patient'
     ? [
-        { id: 'overview', label: 'Overview', icon: <Heart />, path: '/patient/dashboard' },
-        { id: 'experts', label: 'Health Experts', icon: <Users />, path: '/patient/dashboard' },
-        { id: 'trials', label: 'Clinical Trials', icon: <FileText />, path: '/patient/dashboard' },
+        { id: 'overview', label: 'Overview', icon: <Heart />, path: '/patient/dashboard', tab: 'overview' },
+        { id: 'experts', label: 'Health Experts', icon: <Users />, path: '/patient/dashboard', tab: 'experts' },
+        { id: 'trials', label: 'Clinical Trials', icon: <FileText />, path: '/patient/dashboard', tab: 'trials' },
         { id: 'publications', label: 'Publications', icon: <BookOpen />, path: '/publications' },
-        { id: 'forums', label: 'Forums', icon: <MessageCircle />, path: '/patient/dashboard' },
-        { id: 'favorites', label: 'My Favorites', icon: <Star />, path: '/patient/dashboard' },
+        { id: 'forums', label: 'Forums', icon: <MessageCircle />, path: '/patient/dashboard', tab: 'forums' },
+        { id: 'favorites', label: 'My Favorites', icon: <Star />, path: '/patient/dashboard', tab: 'favorites' },
       ]
     : [
-        { id: 'overview', label: 'Overview', icon: <Heart />, path: '/researcher/dashboard' },
-        { id: 'trials', label: 'Clinical Trials', icon: <FileText />, path: '/researcher/dashboard' },
-        { id: 'publications', label: 'Publications', icon: <BookOpen />, path: '/publications' },
-        { id: 'forums', label: 'Forums', icon: <MessageCircle />, path: '/researcher/dashboard' },
-        { id: 'favorites', label: 'My Favorites', icon: <Star />, path: '/researcher/dashboard' },
+        { id: 'overview', label: 'Overview', icon: <Heart />, path: '/researcher/dashboard', tab: 'overview' },
+        { id: 'trials', label: 'Clinical Trials', icon: <FileText />, path: '/researcher/dashboard', tab: 'trials' },
+        { id: 'publications', label: 'Publications', icon: <BookOpen />, path: '/researcher/dashboard', tab: 'publications' },
+        { id: 'forums', label: 'Forums', icon: <MessageCircle />, path: '/researcher/dashboard', tab: 'forums' },
+        { id: 'favorites', label: 'My Favorites', icon: <Star />, path: '/researcher/dashboard', tab: 'favorites' },
       ];
 
   const performSearch = useCallback(async (query, retryCount = 0) => {
@@ -177,9 +177,10 @@ const Publications = () => {
             <button
               key={item.id}
               onClick={() => {
-                if (item.path !== '/publications') {
-                  navigate(item.path);
-                }
+                const isCurrentPage = item.path === '/publications' && !item.tab;
+                if (isCurrentPage) return;
+                const target = item.tab ? `${item.path}?tab=${item.tab}` : item.path;
+                navigate(target);
               }}
               className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg mb-1 transition-colors ${
                 item.id === 'publications'
