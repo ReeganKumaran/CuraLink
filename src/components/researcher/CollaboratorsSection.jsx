@@ -8,6 +8,7 @@ const ResearcherCollaboratorsSection = ({
   onOpenScheduleModal,
   onUpdateMeetingStatus,
   onOpenChat,
+  formatDistanceLabel,
   formatDate,
   formatDateTime,
   collaborators,
@@ -54,9 +55,19 @@ const ResearcherCollaboratorsSection = ({
                   <p className="text-xs text-gray-500">
                     Requested on {formatDate(request.created_at)}
                   </p>
-                  {request.patient_contact && (
-                    <p className="text-sm text-gray-600">Contact: {request.patient_contact}</p>
-                  )}
+                  <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
+                    {request.patient_contact && <span>Contact: {request.patient_contact}</span>}
+                    {Number.isFinite(request.distanceKm) && (
+                      <>
+                        <span className="text-gray-300" aria-hidden="true">
+                          &bull;
+                        </span>
+                        <span className="text-primary-600">
+                          {formatDistanceLabel(request.distanceKm)}
+                        </span>
+                      </>
+                    )}
+                  </div>
                   {request.patient_notes && (
                     <p className="text-sm text-gray-600">Notes: {request.patient_notes}</p>
                   )}
@@ -71,7 +82,7 @@ const ResearcherCollaboratorsSection = ({
                     </p>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span
                     className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
                       request.status === 'accepted'
@@ -172,41 +183,46 @@ const ResearcherCollaboratorsSection = ({
       </div>
     ) : (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {collaborators.map((collaborator) => (
-          <div key={collaborator.id || collaborator.name} className="card">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="bg-primary-100 text-primary-700 rounded-full w-10 h-10 flex items-center justify-center font-semibold">
-                    {(collaborator.name || 'Researcher')
-                      .split(' ')
-                      .map((segment) => segment[0])
-                      .join('')
-                      .slice(0, 2)
-                      .toUpperCase()}
+                {collaborators.map((collaborator) => (
+                  <div key={collaborator.id || collaborator.name} className="card">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-3 mb-3">
+                          <div className="bg-primary-100 text-primary-700 rounded-full w-10 h-10 flex items-center justify-center font-semibold">
+                            {(collaborator.name || 'Researcher')
+                              .split(' ')
+                              .map((segment) => segment[0])
+                              .join('')
+                              .slice(0, 2)
+                              .toUpperCase()}
+                          </div>
+                          <div>
+                            <h3 className="text-lg font-semibold text-gray-900">{collaborator.name}</h3>
+                            <p className="text-sm text-gray-500">{collaborator.institution}</p>
+                            {Number.isFinite(collaborator.distanceKm) && (
+                              <p className="text-xs text-primary-600">
+                                {formatDistanceLabel(collaborator.distanceKm)}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-sm text-gray-600">
+                          <span className="font-medium text-gray-800">Specialties:</span>{' '}
+                          {collaborator.specialties && collaborator.specialties.length > 0
+                            ? collaborator.specialties.join(', ')
+                            : 'Not specified'}
+                        </p>
+                        {collaborator.researchInterests && (
+                          <p className="text-sm text-gray-600 mt-1">
+                            <span className="font-medium text-gray-800">Focus:</span>{' '}
+                            {collaborator.researchInterests}
+                          </p>
+                        )}
+                      </div>
+                      <button className="btn-secondary text-sm px-4 py-2">Connect</button>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900">{collaborator.name}</h3>
-                    <p className="text-sm text-gray-500">{collaborator.institution}</p>
-                  </div>
-                </div>
-                <p className="text-sm text-gray-600">
-                  <span className="font-medium text-gray-800">Specialties:</span>{' '}
-                  {collaborator.specialties && collaborator.specialties.length > 0
-                    ? collaborator.specialties.join(', ')
-                    : 'Not specified'}
-                </p>
-                {collaborator.researchInterests && (
-                  <p className="text-sm text-gray-600 mt-1">
-                    <span className="font-medium text-gray-800">Focus:</span>{' '}
-                    {collaborator.researchInterests}
-                  </p>
-                )}
-              </div>
-              <button className="btn-secondary text-sm px-4 py-2">Connect</button>
-            </div>
-          </div>
-        ))}
+                ))}
       </div>
     )}
   </div>

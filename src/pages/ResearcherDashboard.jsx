@@ -18,6 +18,7 @@ import aiService from '../services/aiService';
 import { useForumData } from '../hooks/useForumData';
 import useCommunityChat from '../hooks/useCommunityChat';
 import ChatWidget from '../components/ChatWidget';
+import api from '../services/api';
 import clinicalTrialService from '../services/clinicalTrialService';
 import ResearcherSidebar from '../components/researcher/Sidebar';
 import ResearcherHeader from '../components/researcher/Header';
@@ -36,6 +37,37 @@ import TrialDetailsModal from '../components/researcher/TrialDetailsModal';
 import ScheduleMeetingModal from '../components/researcher/ScheduleMeetingModal';
 import DiscussionModal from '../components/researcher/DiscussionModal';
 import MeetingChatModal from '../components/meetings/MeetingChatModal';
+
+const hasCoordinates = (lat, lon) => Number.isFinite(lat) && Number.isFinite(lon);
+
+const computeDistanceKm = (lat1, lon1, lat2, lon2) => {
+  if (!hasCoordinates(lat1, lon1) || !hasCoordinates(lat2, lon2)) {
+    return null;
+  }
+  const toRad = (degree) => (degree * Math.PI) / 180;
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+const formatDistanceLabel = (distanceKm) => {
+  if (!Number.isFinite(distanceKm)) {
+    return '';
+  }
+  if (distanceKm >= 100) {
+    return `${Math.round(distanceKm)} km away`;
+  }
+  if (distanceKm >= 1) {
+    return `${distanceKm.toFixed(1)} km away`;
+  }
+  return `${Math.round(distanceKm * 1000)} m away`;
+};
 
 const buildGeneratedTrialSummary = (form) => {
   const { title, phase, sponsor, condition, location, city, country } = form;
@@ -179,6 +211,8 @@ const ResearcherDashboard = () => {
   const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
   const [isMeetingChatOpen, setIsMeetingChatOpen] = useState(false);
   const [chatMeetingRequest, setChatMeetingRequest] = useState(null);
+  const [locationUpdating, setLocationUpdating] = useState(false);
+  const [locationUpdateMessage, setLocationUpdateMessage] = useState(null);
 
   const trialPhases = useMemo(
     () => ['Phase I', 'Phase II', 'Phase III', 'Phase IV', 'Observational'],
@@ -187,6 +221,84 @@ const ResearcherDashboard = () => {
   const trialStatuses = useMemo(
     () => ['Recruiting', 'Active', 'Completed', 'Suspended', 'Not Yet Recruiting'],
     []
+  );
+
+  const researcherLocation = useMemo(
+    () => ({
+      latitude:
+        typeof userProfile?.latitude === 'number'
+          ? userProfile.latitude
+          : userProfile?.latitude
+          ? Number(userProfile.latitude)
+          : null,
+      longitude:
+        typeof userProfile?.longitude === 'number'
+          ? userProfile.longitude
+          : userProfile?.longitude
+          ? Number(userProfile.longitude)
+          : null,
+    }),
+    [userProfile?.latitude, userProfile?.longitude]
+  );
+
+  const hasResearcherLocation = hasCoordinates(
+    researcherLocation.latitude,
+    researcherLocation.longitude
+  );
+
+  const annotateMeetingRequests = useCallback(
+    (requests = []) =>
+      requests.map((request) => {
+        const patientLat =
+          typeof request.patient_profile?.latitude === 'number'
+            ? request.patient_profile.latitude
+            : request.patient_profile?.latitude
+            ? Number(request.patient_profile.latitude)
+            : null;
+        const patientLon =
+          typeof request.patient_profile?.longitude === 'number'
+            ? request.patient_profile.longitude
+            : request.patient_profile?.longitude
+            ? Number(request.patient_profile.longitude)
+            : null;
+        const distanceKm =
+          hasCoordinates(researcherLocation.latitude, researcherLocation.longitude) &&
+          hasCoordinates(patientLat, patientLon)
+            ? computeDistanceKm(
+                researcherLocation.latitude,
+                researcherLocation.longitude,
+                patientLat,
+                patientLon
+              )
+            : null;
+        return {
+          ...request,
+          distanceKm,
+        };
+      }),
+    [researcherLocation]
+  );
+
+  const annotateCollaborators = useCallback(
+    (experts = []) =>
+      experts.map((expert) => {
+        const expertLat =
+          typeof expert.latitude === 'number' ? expert.latitude : Number(expert.latitude);
+        const expertLon =
+          typeof expert.longitude === 'number' ? expert.longitude : Number(expert.longitude);
+        const distanceKm =
+          hasCoordinates(researcherLocation.latitude, researcherLocation.longitude) &&
+          hasCoordinates(expertLat, expertLon)
+            ? computeDistanceKm(
+                researcherLocation.latitude,
+                researcherLocation.longitude,
+                expertLat,
+                expertLon
+              )
+            : null;
+        return { ...expert, distanceKm };
+      }),
+    [researcherLocation]
   );
 
 const handleTrialFormChange = (field) => (event) => {
@@ -314,6 +426,18 @@ const resetTrialForm = useCallback(() => {
           specialties: userData.profile?.specialties?.join(', ') || 'Not specified',
           orcid: userData.profile?.orcid,
           researchGate: userData.profile?.researchGateProfile || userData.profile?.researchGate,
+          latitude:
+            typeof userData.profile?.latitude === 'number'
+              ? userData.profile.latitude
+              : userData.profile?.latitude
+              ? Number(userData.profile.latitude)
+              : null,
+          longitude:
+            typeof userData.profile?.longitude === 'number'
+              ? userData.profile.longitude
+              : userData.profile?.longitude
+              ? Number(userData.profile.longitude)
+              : null,
         });
         setLoading(false);
       } catch (error) {
@@ -356,14 +480,15 @@ const resetTrialForm = useCallback(() => {
       );
       const filtered = uniqueExperts.filter((expert) => expert.id !== userProfile.id);
 
-      setCollaborators(filtered);
+      const annotated = annotateCollaborators(filtered);
+      setCollaborators(annotated);
     } catch (error) {
       console.error('Failed to load collaborators:', error);
       setCollaboratorsError('Unable to load collaborators right now. Please try again later.');
     } finally {
       setCollaboratorsLoading(false);
     }
-  }, [userProfile]);
+  }, [userProfile, annotateCollaborators]);
 
   const loadMeetingRequests = useCallback(async () => {
     if (!userProfile) return;
@@ -371,14 +496,61 @@ const resetTrialForm = useCallback(() => {
     setMeetingRequestsError(null);
     try {
       const { requests } = await expertService.fetchResearcherMeetingRequests();
-      setMeetingRequests(requests || []);
+      const enriched = annotateMeetingRequests(requests || []);
+      setMeetingRequests(enriched);
     } catch (error) {
       console.error('Failed to load meeting requests:', error);
       setMeetingRequestsError('Unable to load meeting requests right now. Please try again.');
     } finally {
       setMeetingRequestsLoading(false);
     }
-  }, [userProfile]);
+  }, [userProfile, annotateMeetingRequests]);
+
+  const handleUseCurrentLocation = useCallback(() => {
+    if (!userProfile) return;
+    if (!navigator.geolocation) {
+      setLocationUpdateMessage('Geolocation is not supported in this browser.');
+      setTimeout(() => setLocationUpdateMessage(null), 4000);
+      return;
+    }
+    setLocationUpdating(true);
+    setLocationUpdateMessage('Locating…');
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const { latitude, longitude } = position.coords;
+          await api.put('/researchers/profile', {
+            latitude,
+            longitude,
+          });
+          setUserProfile((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  latitude,
+                  longitude,
+                }
+              : prev
+          );
+          setLocationUpdateMessage('Location updated.');
+          await Promise.all([loadCollaborators(), loadMeetingRequests()]);
+        } catch (error) {
+          console.error('Failed to update location:', error);
+          setLocationUpdateMessage('Unable to update location. Please try again.');
+        } finally {
+          setLocationUpdating(false);
+          setTimeout(() => setLocationUpdateMessage(null), 4000);
+        }
+      },
+      (error) => {
+        console.warn('Geolocation error:', error);
+        setLocationUpdating(false);
+        setLocationUpdateMessage(error.message || 'Location permission denied.');
+        setTimeout(() => setLocationUpdateMessage(null), 4000);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }, [userProfile, loadCollaborators, loadMeetingRequests]);
 
   const openScheduleModal = (request) => {
     setSelectedMeetingRequest(request);
@@ -882,17 +1054,39 @@ const resetTrialForm = useCallback(() => {
     switch (activeTab) {
       case 'overview':
         return (
-          <ResearcherOverviewSection
-            trialStats={trialStats}
-            questions={questions}
-            collaborators={collaborators}
-            trials={trials}
-            meetingRequests={meetingRequests}
-            formatDate={formatDate}
-            formatDateTime={formatDateTime}
-            onOpenScheduleModal={openScheduleModal}
-            onOpenChat={openMeetingChat}
-          />
+          <div className="space-y-4">
+            {!hasResearcherLocation && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span>
+                  Share your current location to unlock distance insights for patient requests.
+                </span>
+                <div className="flex items-center gap-3">
+                  {locationUpdateMessage && (
+                    <span className="text-xs text-gray-500">{locationUpdateMessage}</span>
+                  )}
+                  <button
+                    onClick={handleUseCurrentLocation}
+                    disabled={locationUpdating}
+                    className="btn-secondary text-xs px-4 py-2 disabled:opacity-60"
+                  >
+                    {locationUpdating ? 'Detecting…' : 'Use current location'}
+                  </button>
+                </div>
+              </div>
+            )}
+            <ResearcherOverviewSection
+              trialStats={trialStats}
+              questions={questions}
+              collaborators={collaborators}
+              trials={trials}
+              meetingRequests={meetingRequests}
+              formatDate={formatDate}
+              formatDateTime={formatDateTime}
+              onOpenScheduleModal={openScheduleModal}
+              onOpenChat={openMeetingChat}
+              formatDistanceLabel={formatDistanceLabel}
+            />
+          </div>
         );
       case 'trials':
         return (
@@ -908,21 +1102,43 @@ const resetTrialForm = useCallback(() => {
         );
       case 'collaborators':
         return (
-          <ResearcherCollaboratorsSection
-            meetingRequests={meetingRequests}
-            meetingRequestsLoading={meetingRequestsLoading}
-            meetingRequestsError={meetingRequestsError}
-            onRefreshMeetingRequests={loadMeetingRequests}
-            onOpenScheduleModal={openScheduleModal}
-            onUpdateMeetingStatus={handleMeetingStatusChange}
-             onOpenChat={openMeetingChat}
-            formatDate={formatDate}
-            formatDateTime={formatDateTime}
-            collaborators={collaborators}
-            collaboratorsLoading={collaboratorsLoading}
-            collaboratorsError={collaboratorsError}
-            onRefreshCollaborators={loadCollaborators}
-          />
+          <div className="space-y-4">
+            {!hasResearcherLocation && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span>
+                  Share your location to see how far patients and collaborators are from you.
+                </span>
+                <div className="flex items-center gap-3">
+                  {locationUpdateMessage && (
+                    <span className="text-gray-500">{locationUpdateMessage}</span>
+                  )}
+                  <button
+                    onClick={handleUseCurrentLocation}
+                    disabled={locationUpdating}
+                    className="btn-secondary text-xs px-4 py-2 disabled:opacity-60"
+                  >
+                    {locationUpdating ? 'Detecting…' : 'Use current location'}
+                  </button>
+                </div>
+              </div>
+            )}
+            <ResearcherCollaboratorsSection
+              meetingRequests={meetingRequests}
+              meetingRequestsLoading={meetingRequestsLoading}
+              meetingRequestsError={meetingRequestsError}
+              onRefreshMeetingRequests={loadMeetingRequests}
+              onOpenScheduleModal={openScheduleModal}
+              onUpdateMeetingStatus={handleMeetingStatusChange}
+              onOpenChat={openMeetingChat}
+              formatDistanceLabel={formatDistanceLabel}
+              formatDate={formatDate}
+              formatDateTime={formatDateTime}
+              collaborators={collaborators}
+              collaboratorsLoading={collaboratorsLoading}
+              collaboratorsError={collaboratorsError}
+              onRefreshCollaborators={loadCollaborators}
+            />
+          </div>
         );
       case 'forums':
         return (

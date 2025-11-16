@@ -10,6 +10,7 @@ const ResearcherOverviewSection = ({
   formatDateTime,
   onOpenScheduleModal,
   onOpenChat,
+  formatDistanceLabel,
 }) => (
   <div className="space-y-6">
     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -99,6 +100,11 @@ const ResearcherOverviewSection = ({
                   <p className="text-xs text-gray-500">
                     Requested on {formatDate ? formatDate(request.created_at) : request.created_at}
                   </p>
+                  {Number.isFinite(request.distanceKm) && formatDistanceLabel && (
+                    <p className="text-xs text-primary-600">
+                      {formatDistanceLabel(request.distanceKm)}
+                    </p>
+                  )}
                   {request.scheduled_at && (
                     <p className="text-xs text-primary-700 font-medium">
                       Scheduled for{' '}
