@@ -16,6 +16,7 @@ import { useForumData } from '../hooks/useForumData';
 import ChatWidget from '../components/ChatWidget';
 import UnifiedSearchModal from '../components/search/UnifiedSearchModal';
 import MeetingChatModal from '../components/meetings/MeetingChatModal';
+import * as XLSX from 'xlsx';
 
 const EXPERTS_REFRESH_INTERVAL_MS = 4 * 60 * 1000;
 const TRIALS_REFRESH_INTERVAL_MS = 6 * 60 * 1000;
@@ -53,6 +54,65 @@ const formatDistanceLabel = (distanceKm) => {
     return `${distanceKm.toFixed(1)} km away`;
   }
   return `${Math.round(distanceKm * 1000)} m away`;
+};
+
+const normalizeText = (value = '') => value.toLowerCase();
+
+const tokenizeSearchTerm = (term = '') =>
+  term
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean);
+
+const computeTextMatch = (text = '', keywords = []) => {
+  if (!text || keywords.length === 0) return 0;
+  const normalized = normalizeText(text);
+  if (!normalized) return 0;
+  const matches = keywords.filter((keyword) => normalized.includes(keyword));
+  return matches.length / keywords.length;
+};
+
+const computeTrialMatchScore = (trial, { condition, searchTerm, location }) => {
+  let score = 0;
+  const keywords = tokenizeSearchTerm(searchTerm);
+
+  if (condition) {
+    const normalizedCondition = normalizeText(condition);
+    const conditionFields = [trial.condition, trial.title, trial.summary, trial.sponsor]
+      .filter(Boolean)
+      .map(normalizeText);
+
+    const conditionHit = conditionFields.some((field) => field.includes(normalizedCondition));
+    if (conditionHit) {
+      score += trial.source === 'clinicaltrials.gov' ? 55 : 50;
+    }
+  }
+
+  if (keywords.length > 0) {
+    const content = [
+      trial.title,
+      trial.summary,
+      trial.condition,
+      trial.sponsor,
+      Array.isArray(trial.tags) ? trial.tags.join(' ') : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    score += computeTextMatch(content, keywords) * 40;
+  }
+
+  if (location) {
+    const locationText = [trial.location, trial.city, trial.country].filter(Boolean).join(' ').toLowerCase();
+    if (locationText.includes(location.toLowerCase())) {
+      score += 12;
+    }
+  }
+
+  if (trial.isRemote) {
+    score += 3;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(score)));
 };
 
 const MatchScoreBadge = ({ score }) => {
@@ -141,16 +201,21 @@ const annotateAndSortByLocation = (items = [], patientLocation = {}, resolver) =
         locationScore: score,
         locationMatchLabel: label,
         distanceKm,
+        normalizedMatchScore: Number.isFinite(item.matchScore) ? item.matchScore : 0,
         _originalIndex: index,
       };
     })
     .sort((a, b) => {
+      const matchDiff = b.normalizedMatchScore - a.normalizedMatchScore;
+      if (Math.abs(matchDiff) > 0.0001) {
+        return matchDiff;
+      }
       if (b.locationScore === a.locationScore) {
         return a._originalIndex - b._originalIndex;
       }
       return b.locationScore - a.locationScore;
     })
-    .map(({ _originalIndex, ...rest }) => rest);
+    .map(({ _originalIndex, normalizedMatchScore, ...rest }) => rest);
 };
 
 const formatLastUpdatedLabel = (timestamp) => {
@@ -619,7 +684,17 @@ const loadClinicalTrials = useCallback(
       const { trials } = await clinicalTrialService.fetchClinicalTrials(params);
       console.log('Patient received trials:', trials?.length, 'trials');
       console.log('Trial sources:', trials?.map(t => ({ title: t.title?.substring(0, 50), source: t.source })));
-      const sortedTrials = applyTrialLocationSort(trials || []);
+      const locationLabel = [userProfile?.city, userProfile?.country].filter(Boolean).join(', ');
+      const context = {
+        condition: userProfile?.condition,
+        searchTerm,
+        location: locationLabel,
+      };
+      const enrichedTrials = (trials || []).map((trial) => ({
+        ...trial,
+        matchScore: computeTrialMatchScore(trial, context),
+      }));
+      const sortedTrials = applyTrialLocationSort(enrichedTrials);
       setClinicalTrials(sortedTrials);
       setTrialsUpdatedAt(Date.now());
     } catch (error) {
@@ -815,91 +890,100 @@ const clearFavoriteSelections = useCallback(() => {
   setExportStatus(null);
 }, []);
 
-const buildFavoriteExportSummary = useCallback(() => {
-  const lines = [];
-  const timestamp = new Date().toLocaleString();
-  lines.push('CuraLink Favorites Summary');
-  lines.push(`Generated: ${timestamp}`);
-  lines.push('');
-
+const buildFavoritesWorkbook = useCallback(() => {
   const expertIds = Array.from(selectedFavorites.experts);
-  if (expertIds.length > 0) {
-    lines.push('Researchers:');
-    expertIds.forEach((id) => {
-      const expert = expertCache[id];
-      if (!expert) return;
-      const specialties = Array.isArray(expert.specialties)
-        ? expert.specialties.slice(0, 3).join(', ')
-        : '';
-      lines.push(
-        `• ${expert.name} — ${expert.institution || 'Institution not specified'}${
-          specialties ? ` (Specialties: ${specialties})` : ''
-        }`
-      );
-    });
-    lines.push('');
-  }
-
   const trialIds = Array.from(selectedFavorites.trials);
-  if (trialIds.length > 0) {
-    lines.push('Clinical Trials:');
-    trialIds.forEach((id) => {
-      const trial = favoriteTrialsCache[id];
-      if (!trial) return;
-      const location = trial.location || [trial.city, trial.country].filter(Boolean).join(', ');
-      lines.push(
-        `• ${trial.title} — ${trial.phase || 'Phase N/A'} | ${trial.status || 'Status unknown'}${
-          location ? ` | ${location}` : ''
-        }`
-      );
-    });
-    lines.push('');
-  }
-
   const publicationIds = Array.from(selectedFavorites.publications);
-  if (publicationIds.length > 0) {
-    lines.push('Publications:');
-    publicationIds.forEach((pmid) => {
+
+  const expertRows = expertIds
+    .map((id) => {
+      const expert = expertCache[id] || experts.find((candidate) => candidate.id === id);
+      if (!expert) return null;
+      const specialties = Array.isArray(expert.specialties) ? expert.specialties.join(', ') : '';
+      const location = expert.location || [expert.city, expert.country].filter(Boolean).join(', ');
+      return {
+        Name: expert.name || 'N/A',
+        Institution: expert.institution || 'N/A',
+        Specialties: specialties || 'N/A',
+        'Research Focus': expert.researchInterests || 'N/A',
+        Location: location || 'N/A',
+        'Match Score': Number.isFinite(expert.matchScore) ? `${expert.matchScore}%` : '',
+      };
+    })
+    .filter(Boolean);
+
+  const trialRows = trialIds
+    .map((id) => {
+      const trial = favoriteTrialsCache[id] || clinicalTrials.find((item) => item.id === id);
+      if (!trial) return null;
+      const location = trial.location || [trial.city, trial.country].filter(Boolean).join(', ');
+      return {
+        Title: trial.title || 'N/A',
+        Condition: trial.condition || 'N/A',
+        Phase: trial.phase || 'N/A',
+        Status: trial.status || 'N/A',
+        Sponsor: trial.sponsor || 'N/A',
+        Location: location || 'N/A',
+        'Start Date': trial.startDate || trial.start_date || 'N/A',
+        'Match Score': Number.isFinite(trial.matchScore) ? `${trial.matchScore}%` : '',
+        Source: trial.source || 'CuraLink',
+      };
+    })
+    .filter(Boolean);
+
+  const publicationRows = publicationIds
+    .map((pmid) => {
       const publication = favoritePublications.find((pub) => pub.pmid === pmid);
-      if (!publication) return;
-      lines.push(`• ${publication.title} (${publication.journal}, ${publication.year || 'Year N/A'})`);
-    });
-    lines.push('');
+      if (!publication) return null;
+      return {
+        Title: publication.title || 'Untitled',
+        Journal: publication.journal || 'N/A',
+        Year: publication.year || 'N/A',
+        PMID: publication.pmid || 'N/A',
+      };
+    })
+    .filter(Boolean);
+
+  if (expertRows.length === 0 && trialRows.length === 0 && publicationRows.length === 0) {
+    return null;
   }
 
-  const summary = lines.join('\n').trim();
-  return summary.length > 0 ? summary : '';
-}, [selectedFavorites, expertCache, favoriteTrialsCache, favoritePublications]);
+  const workbook = XLSX.utils.book_new();
+  if (expertRows.length > 0) {
+    const sheet = XLSX.utils.json_to_sheet(expertRows);
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Experts');
+  }
+  if (trialRows.length > 0) {
+    const sheet = XLSX.utils.json_to_sheet(trialRows);
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Clinical Trials');
+  }
+  if (publicationRows.length > 0) {
+    const sheet = XLSX.utils.json_to_sheet(publicationRows);
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Publications');
+  }
+  return workbook;
+}, [selectedFavorites, expertCache, experts, favoriteTrialsCache, clinicalTrials, favoritePublications]);
 
-const handleExportFavorites = useCallback(async () => {
-  const summary = buildFavoriteExportSummary();
-  if (!summary) return;
+const handleExportFavorites = useCallback(() => {
+  const workbook = buildFavoritesWorkbook();
+  if (!workbook) {
+    setExportStatus('Select at least one favorite to export.');
+    return;
+  }
   setIsExportingFavorites(true);
   setExportStatus(null);
   try {
-    await navigator.clipboard.writeText(summary);
-    setExportStatus('Copied selected favorites to your clipboard.');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `curalink-favorites-${timestamp}.xlsx`;
+    XLSX.writeFile(workbook, filename);
+    setExportStatus('Downloaded favorites as an Excel file.');
   } catch (error) {
-    console.warn('Clipboard write failed, falling back to download.', error);
-    try {
-      const blob = new Blob([summary], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `curalink-favorites-${Date.now()}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      setExportStatus('Downloaded favorites summary because clipboard access was blocked.');
-    } catch (fallbackError) {
-      console.error('Failed to export favorites:', fallbackError);
-      setExportStatus('Unable to export favorites. Please try again.');
-    }
+    console.error('Failed to export favorites:', error);
+    setExportStatus('Unable to export favorites. Please try again.');
   } finally {
     setIsExportingFavorites(false);
   }
-}, [buildFavoriteExportSummary]);
+}, [buildFavoritesWorkbook]);
 
 const ensureTrialInCache = useCallback(async (trialId) => {
   if (!trialId || favoriteTrialsCache[trialId]) return;
@@ -1342,24 +1426,24 @@ useEffect(() => {
                 <p className="text-sm text-gray-500">Total requests</p>
               </div>
             </div>
-
-            <div className="card">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-                <div>
-                  <h3 className="text-xl font-semibold text-gray-900">Top expert matches</h3>
-                  <p className="text-sm text-gray-500">
-                    Tailored for {userProfile?.condition || 'your profile'}
-                  </p>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+              <div className="card h-full flex flex-col">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                  <div>
+                    <h3 className="text-xl font-semibold text-gray-900">Top expert matches</h3>
+                    <p className="text-sm text-gray-500">
+                      Tailored for {userProfile?.condition || 'your profile'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleTabChange('experts')}
+                    className="inline-flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700"
+                  >
+                    View all matches
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleTabChange('experts')}
-                  className="inline-flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700"
-                >
-                  View all matches
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
               {expertsLoading ? (
                 <div className="space-y-3">
                   {[1, 2, 3].map((item) => (
@@ -1371,43 +1455,55 @@ useEffect(() => {
                   We’ll show personalized expert matches once you add your condition or follow a few experts.
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {topMatchExperts.map((expert) => (
-                    <div
-                      key={expert.id || expert.name}
-                      className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 border border-gray-100 rounded-2xl px-4 py-3"
-                    >
-                      <div>
-                        <p className="font-semibold text-gray-900">{expert.name || 'Expert pending'}</p>
-                        <p className="text-sm text-gray-600">
-                          {expert.institution || 'Institution not specified'}
-                        </p>
-                        <p className="text-xs text-gray-500">
-                          {(expert.specialties || []).slice(0, 2).join(', ') ||
-                            expert.researchInterests ||
-                            'Specialty not listed'}
-                        </p>
+                  <div className="space-y-3">
+                    {topMatchExperts.map((expert) => (
+                      <div
+                        key={expert.id || expert.name}
+                        className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 border border-gray-100 rounded-2xl px-4 py-3"
+                      >
+                        <div>
+                          <p className="font-semibold text-gray-900">{expert.name || 'Expert pending'}</p>
+                          <p className="text-sm text-gray-600">
+                            {expert.institution || 'Institution not specified'}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {(expert.specialties || []).slice(0, 2).join(', ') ||
+                              expert.researchInterests ||
+                              'Specialty not listed'}
+                          </p>
+                        </div>
+                        <div className="flex flex-col md:flex-row md:items-center gap-3">
+                          <div className="flex flex-col items-start md:items-end gap-2">
+                            <MatchScoreBadge score={expert.matchScore} />
+                            {Number.isFinite(expert.distanceKm) ? (
+                              <span className="text-xs text-gray-500">
+                                {formatDistanceLabel(expert.distanceKm)}
+                              </span>
+                            ) : (
+                              expert.locationMatchLabel && (
+                                <span className="text-xs text-gray-500">{expert.locationMatchLabel}</span>
+                              )
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setProfileModalExpert(expert);
+                              setActiveTab('experts');
+                            }}
+                            className="inline-flex items-center justify-center rounded-full border border-gray-300 px-4 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                          >
+                            View Profile
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex flex-col items-start md:items-end gap-2">
-                        <MatchScoreBadge score={expert.matchScore} />
-                        {Number.isFinite(expert.distanceKm) ? (
-                          <span className="text-xs text-gray-500">
-                            {formatDistanceLabel(expert.distanceKm)}
-                          </span>
-                        ) : (
-                          expert.locationMatchLabel && (
-                            <span className="text-xs text-gray-500">{expert.locationMatchLabel}</span>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
               )}
-            </div>
+              </div>
 
-            <div className="card">
-              <h3 className="text-xl font-semibold mb-4">Meeting Requests</h3>
+              <div className="card h-full flex flex-col">
+                <h3 className="text-xl font-semibold mb-4">Meeting Requests</h3>
               {meetingRequestsLoading ? (
                 <div className="space-y-3">
                   {[1, 2].map((item) => (
@@ -1488,6 +1584,7 @@ useEffect(() => {
                   View all {meetingRequests.length} requests →
                 </button>
               )}
+            </div>
             </div>
 
             <div className="card">
@@ -1919,6 +2016,9 @@ useEffect(() => {
                               <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
                                 ClinicalTrials.gov
                               </span>
+                            )}
+                            {Number.isFinite(trial.matchScore) && (
+                              <MatchScoreBadge score={trial.matchScore} />
                             )}
                           </div>
                           <h3 className="text-lg font-semibold text-gray-900">{trial.title}</h3>
