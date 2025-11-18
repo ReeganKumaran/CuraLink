@@ -10,6 +10,7 @@ import {
   Filter,
   TrendingUp,
   ArrowRight,
+  X,
 } from 'lucide-react';
 import { logo } from '../assets/assets';
 import authService from '../services/authService';
@@ -20,6 +21,7 @@ import useCommunityChat from '../hooks/useCommunityChat';
 import ChatWidget from '../components/ChatWidget';
 import api from '../services/api';
 import clinicalTrialService from '../services/clinicalTrialService';
+import collaboratorChatService from '../services/collaboratorChatService';
 import ResearcherSidebar from '../components/researcher/Sidebar';
 import ResearcherHeader from '../components/researcher/Header';
 import ResearcherOverviewSection from '../components/researcher/OverviewSection';
@@ -153,6 +155,8 @@ const ResearcherDashboard = () => {
   const [chatMessage, setChatMessage] = useState('');
   const [chatError, setChatError] = useState(null);
   const messagesEndRef = useRef(null);
+  const collaboratorChatScrollRef = useRef(null);
+  const collaboratorChatStatusTimeoutRef = useRef(null);
 
   const [askForm, setAskForm] = useState({
     category: 'Cancer Research',
@@ -206,6 +210,14 @@ const ResearcherDashboard = () => {
   const [meetingRequests, setMeetingRequests] = useState([]);
   const [meetingRequestsLoading, setMeetingRequestsLoading] = useState(false);
   const [meetingRequestsError, setMeetingRequestsError] = useState(null);
+  const [selectedCollaborator, setSelectedCollaborator] = useState(null);
+  const [isCollaboratorModalOpen, setIsCollaboratorModalOpen] = useState(false);
+  const [collaboratorContactStatus, setCollaboratorContactStatus] = useState(null);
+  const [collaboratorChats, setCollaboratorChats] = useState({});
+  const [collaboratorChatLoading, setCollaboratorChatLoading] = useState(false);
+  const [collaboratorChatError, setCollaboratorChatError] = useState(null);
+  const [collaboratorChatInput, setCollaboratorChatInput] = useState('');
+  const [collaboratorChatStatus, setCollaboratorChatStatus] = useState(null);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [selectedMeetingRequest, setSelectedMeetingRequest] = useState(null);
   const [scheduleForm, setScheduleForm] = useState({ date: '', time: '', notes: '' });
@@ -302,6 +314,33 @@ const ResearcherDashboard = () => {
     [researcherLocation]
   );
 
+const getCollaboratorEmail = (collaborator) =>
+  collaborator?.email ||
+  collaborator?.contactEmail ||
+  collaborator?.contact_email ||
+  collaborator?.preferredEmail ||
+  '';
+
+const normalizeSearchText = (value) =>
+  typeof value === 'string'
+    ? value
+        .toLowerCase()
+        .replace(/[\.\,\-_\/\\]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    : '';
+const getCollaboratorIdentity = (collaborator) =>
+  collaborator?.id || collaborator?.userId || collaborator?.user_id || null;
+
+  const collaboratorChatMessages = useMemo(() => {
+    const collaboratorId = getCollaboratorIdentity(selectedCollaborator);
+    if (!collaboratorId) {
+      return [];
+    }
+    const key = String(collaboratorId);
+    return collaboratorChats[key] || [];
+  }, [collaboratorChats, selectedCollaborator]);
+
 const handleTrialFormChange = (field) => (event) => {
   const value =
     field === 'isRemote' ? event.target.checked : event.target.value;
@@ -357,6 +396,115 @@ const resetTrialForm = useCallback(() => {
   setSummaryTouched(false);
   setEligibilityTouched(false);
 }, []);
+
+  const handleCollaboratorConnect = useCallback((collaborator) => {
+    if (!collaborator) return;
+    setSelectedCollaborator(collaborator);
+    setCollaboratorContactStatus(null);
+    setCollaboratorChatStatus(null);
+    setCollaboratorChatError(null);
+    setCollaboratorChatInput('');
+    if (collaboratorChatStatusTimeoutRef.current) {
+      clearTimeout(collaboratorChatStatusTimeoutRef.current);
+      collaboratorChatStatusTimeoutRef.current = null;
+    }
+    setIsCollaboratorModalOpen(true);
+  }, []);
+
+  const handleCopyCollaboratorEmail = useCallback(async () => {
+    if (!selectedCollaborator) return;
+    const email = getCollaboratorEmail(selectedCollaborator);
+    if (!email) {
+      setCollaboratorContactStatus('This researcher has not shared a contact email yet.');
+      return;
+    }
+    try {
+      if (typeof navigator !== 'undefined' && navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(email);
+        setCollaboratorContactStatus('Email copied to clipboard.');
+      } else {
+        throw new Error('Clipboard not supported');
+      }
+    } catch (error) {
+      console.error('Failed to copy collaborator email:', error);
+      setCollaboratorContactStatus('Unable to copy automatically. Please copy the email manually.');
+    }
+  }, [selectedCollaborator]);
+
+  const handleEmailCollaborator = useCallback(() => {
+    if (!selectedCollaborator) return;
+    const email = getCollaboratorEmail(selectedCollaborator);
+    if (!email) {
+      setCollaboratorContactStatus('This researcher has not shared a contact email yet.');
+      return;
+    }
+    const subject = encodeURIComponent('Collaboration inquiry via CuraLink');
+    const greeting = selectedCollaborator.name
+      ? `Hi ${selectedCollaborator.name.split(' ')[0]},\n\n`
+      : '';
+    const body = encodeURIComponent(
+      `${greeting}I'd love to connect about potential collaboration opportunities.`
+    );
+    const mailtoLink = `mailto:${email}?subject=${subject}&body=${body}`;
+    if (typeof window !== 'undefined') {
+      window.open(mailtoLink, '_blank', 'noopener');
+    }
+  }, [selectedCollaborator]);
+
+  const handleSendCollaboratorChatMessage = useCallback(
+    async (event) => {
+      event?.preventDefault?.();
+      if (!selectedCollaborator || !userProfile?.id) return;
+      const trimmed = collaboratorChatInput.trim();
+      if (!trimmed) return;
+      const collaboratorId = getCollaboratorIdentity(selectedCollaborator);
+      if (!collaboratorId) return;
+      const key = String(collaboratorId);
+
+      setCollaboratorChatError(null);
+      try {
+        const { message: savedMessage } = await collaboratorChatService.sendCollaboratorMessage(
+          collaboratorId,
+          trimmed
+        );
+
+        setCollaboratorChats((prev) => ({
+          ...prev,
+          [key]: [...(prev[key] || []), savedMessage],
+        }));
+
+        setCollaboratorChatInput('');
+        if (collaboratorChatStatusTimeoutRef.current) {
+          clearTimeout(collaboratorChatStatusTimeoutRef.current);
+        }
+        setCollaboratorChatStatus('Message sent.');
+        collaboratorChatStatusTimeoutRef.current = setTimeout(
+          () => setCollaboratorChatStatus(null),
+          4000
+        );
+      } catch (error) {
+        console.error('Failed to send collaborator chat message:', error);
+        setCollaboratorChatError(
+          error?.response?.data?.message || 'Unable to send message. Please try again.'
+        );
+      }
+    },
+    [collaboratorChatInput, selectedCollaborator, userProfile?.id]
+  );
+
+  const closeCollaboratorModal = useCallback(() => {
+    setSelectedCollaborator(null);
+    setIsCollaboratorModalOpen(false);
+    setCollaboratorContactStatus(null);
+    setCollaboratorChatStatus(null);
+    setCollaboratorChatError(null);
+    setCollaboratorChatLoading(false);
+    setCollaboratorChatInput('');
+    if (collaboratorChatStatusTimeoutRef.current) {
+      clearTimeout(collaboratorChatStatusTimeoutRef.current);
+      collaboratorChatStatusTimeoutRef.current = null;
+    }
+  }, []);
 
   const openTrialModal = () => {
     resetTrialForm();
@@ -468,12 +616,60 @@ const resetTrialForm = useCallback(() => {
     }
   }, [isReplyModalOpen]);
 
+  useEffect(() => {
+    if (collaboratorChatScrollRef.current) {
+      collaboratorChatScrollRef.current.scrollTop =
+        collaboratorChatScrollRef.current.scrollHeight;
+    }
+  }, [collaboratorChatMessages]);
+
+  useEffect(() => {
+    const loadCollaboratorChat = async () => {
+      const collaboratorId = getCollaboratorIdentity(selectedCollaborator);
+      if (!userProfile?.id || !collaboratorId) return;
+      const key = String(collaboratorId);
+      if (collaboratorChats[key]) {
+        return;
+      }
+      setCollaboratorChatLoading(true);
+      setCollaboratorChatError(null);
+      try {
+        const { messages } = await collaboratorChatService.fetchCollaboratorMessages(
+          collaboratorId
+        );
+        setCollaboratorChats((prev) => ({
+          ...prev,
+          [key]: messages || [],
+        }));
+      } catch (error) {
+        console.error('Failed to load collaborator chat:', error);
+        setCollaboratorChatError('Unable to load chat history.');
+      } finally {
+        setCollaboratorChatLoading(false);
+      }
+    };
+
+    loadCollaboratorChat();
+  }, [selectedCollaborator, userProfile?.id, collaboratorChats]);
+
+  useEffect(() => {
+    return () => {
+      if (collaboratorChatStatusTimeoutRef.current) {
+        clearTimeout(collaboratorChatStatusTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const loadCollaborators = useCallback(async () => {
     if (!userProfile) return;
     setCollaboratorsLoading(true);
     setCollaboratorsError(null);
     try {
-      const { experts } = await expertService.fetchExperts({ search: '', condition: '' });
+      const { experts } = await expertService.fetchExperts({
+        search: '',
+        condition: '',
+        limit: 100 // Request more collaborators to ensure all platform researchers are included
+      });
 
       // Remove duplicates by id and filter out current user
       const uniqueExperts = Array.from(
@@ -818,14 +1014,13 @@ const resetTrialForm = useCallback(() => {
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const requestedTab = params.get('tab');
+
     if (requestedTab && sidebarItems.some((item) => item.id === requestedTab)) {
-      if (requestedTab !== activeTab) {
-        setActiveTab(requestedTab);
-      }
-    } else if (!requestedTab && activeTab !== 'overview') {
+      setActiveTab(requestedTab);
+    } else if (!requestedTab) {
       setActiveTab('overview');
     }
-  }, [location.search, sidebarItems, activeTab]);
+  }, [location.search, sidebarItems]);
 
   const trialStats = useMemo(() => {
     if (!Array.isArray(trials) || trials.length === 0) {
@@ -855,6 +1050,32 @@ const resetTrialForm = useCallback(() => {
       { total: 0, recruiting: 0, enrollmentCurrent: 0, enrollmentTarget: 0 }
     );
   }, [trials]);
+
+  const filteredCollaborators = useMemo(() => {
+    const query = normalizeSearchText(trialSearchTerm);
+    if (!query) return collaborators;
+
+    return collaborators.filter((collaborator) => {
+      const specialties =
+        Array.isArray(collaborator.specialties) && collaborator.specialties.length > 0
+          ? collaborator.specialties.join(' ')
+          : collaborator.specialties;
+
+      const searchPool = [
+        collaborator.name,
+        collaborator.institution,
+        specialties,
+        collaborator.researchInterests,
+        collaborator.focus,
+        collaborator.city,
+        collaborator.country,
+      ]
+        .map((field) => normalizeSearchText(field))
+        .filter(Boolean);
+
+      return searchPool.some((field) => field.includes(query));
+    });
+  }, [collaborators, trialSearchTerm]);
 
   const mockPublications = [
     {
@@ -1164,10 +1385,11 @@ const resetTrialForm = useCallback(() => {
               onOpenScheduleModal={openScheduleModal}
               onUpdateMeetingStatus={handleMeetingStatusChange}
               onOpenChat={openMeetingChat}
+              onConnectCollaborator={handleCollaboratorConnect}
               formatDistanceLabel={formatDistanceLabel}
               formatDate={formatDate}
               formatDateTime={formatDateTime}
-              collaborators={collaborators}
+              collaborators={filteredCollaborators}
               collaboratorsLoading={collaboratorsLoading}
               collaboratorsError={collaboratorsError}
               onRefreshCollaborators={loadCollaborators}
@@ -1252,6 +1474,166 @@ const resetTrialForm = useCallback(() => {
           {content}
         </main>
       </div>
+
+      {isCollaboratorModalOpen && selectedCollaborator && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40" onClick={closeCollaboratorModal} />
+          <div className="relative z-50 w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-primary-600">
+                  Collaborator contact
+                </p>
+                <h3 className="text-xl font-semibold text-gray-900 mt-1">
+                  {selectedCollaborator.name || 'Researcher'}
+                </h3>
+                {selectedCollaborator.institution && (
+                  <p className="text-sm text-gray-500">{selectedCollaborator.institution}</p>
+                )}
+                {Number.isFinite(selectedCollaborator.distanceKm) && (
+                  <p className="text-xs text-primary-600 mt-1">
+                    {formatDistanceLabel(selectedCollaborator.distanceKm)}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={closeCollaboratorModal}
+                className="rounded-full p-2 text-gray-500 hover:bg-gray-100"
+                aria-label="Close collaborator modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 text-sm text-gray-600">
+              {selectedCollaborator.specialties && selectedCollaborator.specialties.length > 0 && (
+                <p>
+                  <span className="font-medium text-gray-800">Specialties:</span>{' '}
+                  {selectedCollaborator.specialties.join(', ')}
+                </p>
+              )}
+              {selectedCollaborator.researchInterests && (
+                <p>
+                  <span className="font-medium text-gray-800">Focus:</span>{' '}
+                  {selectedCollaborator.researchInterests}
+                </p>
+              )}
+              <div className="rounded-xl bg-gray-50 border border-gray-100 px-4 py-3">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Email</p>
+                <p className="text-sm font-medium text-gray-900 mt-1">
+                  {getCollaboratorEmail(selectedCollaborator) || 'Not provided'}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-gray-900">Direct chat</p>
+                <span className="text-[11px] uppercase tracking-wide text-primary-500">Beta</span>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                Start a quick conversation before sending a formal email. Messages are stored so both
+                researchers can revisit the thread.
+              </p>
+              <div className="mt-3 rounded-2xl border border-gray-100 bg-gray-50 p-4">
+                {collaboratorChatError && (
+                  <p className="text-xs text-red-600 mb-2">{collaboratorChatError}</p>
+                )}
+                <div
+                  ref={collaboratorChatScrollRef}
+                  className="h-48 overflow-y-auto space-y-3 pr-1"
+                >
+                  {collaboratorChatLoading ? (
+                    <div className="text-center text-sm text-gray-500 py-6">Loading chat…</div>
+                  ) : collaboratorChatMessages.length === 0 ? (
+                    <div className="text-center text-sm text-gray-500 py-6">
+                      No messages yet. Say hello to break the ice.
+                    </div>
+                  ) : (
+                    collaboratorChatMessages.map((message) => {
+                      const senderId = message.senderId || message.sender;
+                      const isSelf = senderId === userProfile?.id || message.sender === 'researcher';
+                      const body = message.message || message.text;
+                      const timestamp = message.createdAt || message.timestamp;
+                      return (
+                        <div
+                          key={message.id}
+                          className={`flex ${isSelf ? 'justify-end' : 'justify-start'}`}
+                        >
+                          <div
+                            className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm ${
+                              isSelf
+                                ? 'bg-primary-600 text-white rounded-br-sm'
+                                : 'bg-white text-gray-900 border border-gray-200 rounded-bl-sm'
+                            }`}
+                          >
+                            <p className="whitespace-pre-wrap">{body}</p>
+                            <p
+                              className={`text-[11px] mt-1 ${
+                                isSelf ? 'text-primary-100 text-right' : 'text-gray-500'
+                              }`}
+                            >
+                              {timestamp
+                                ? new Date(timestamp).toLocaleTimeString([], {
+                                    hour: 'numeric',
+                                    minute: '2-digit',
+                                  })
+                                : ''}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <form onSubmit={handleSendCollaboratorChatMessage} className="mt-3 space-y-3">
+                  <textarea
+                    value={collaboratorChatInput}
+                    onChange={(event) => setCollaboratorChatInput(event.target.value)}
+                    className="w-full rounded-2xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    placeholder="Write a quick hello or share context..."
+                    rows={3}
+                  />
+                  <div className="flex items-center justify-end">
+                    <button
+                      type="submit"
+                      className="btn-primary px-6 py-2 text-sm disabled:opacity-60"
+                      disabled={!collaboratorChatInput.trim() || collaboratorChatLoading}
+                    >
+                      Send message
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            {collaboratorChatStatus && (
+              <p className="mt-4 text-xs text-primary-600">{collaboratorChatStatus}</p>
+            )}
+            {collaboratorContactStatus && (
+              <p className="mt-2 text-sm text-primary-600">{collaboratorContactStatus}</p>
+            )}
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+              <button
+                onClick={handleCopyCollaboratorEmail}
+                className="btn-secondary w-full sm:w-auto"
+                disabled={!getCollaboratorEmail(selectedCollaborator)}
+              >
+                Copy email
+              </button>
+              <button
+                onClick={handleEmailCollaborator}
+                className="btn-primary w-full sm:w-auto"
+                disabled={!getCollaboratorEmail(selectedCollaborator)}
+              >
+                Email collaborator
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <AskQuestionModal
         isOpen={isAskModalOpen}

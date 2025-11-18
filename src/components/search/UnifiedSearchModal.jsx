@@ -48,16 +48,22 @@ const UnifiedSearchModal = ({
 
     if (context?.condition && lastAutoQueryRef.current !== context.condition) {
       lastAutoQueryRef.current = context.condition;
-      runSearch(context.condition);
-      setSubmittedQuery(context.condition);
+      (async () => {
+        const finalQuery = await runSearch(context.condition);
+        if (finalQuery) {
+          setSubmittedQuery(finalQuery);
+        }
+      })();
     }
   }, [isOpen, context?.condition, runSearch]);
 
-  const handleSearch = (evt) => {
+  const handleSearch = async (evt) => {
     evt.preventDefault();
     if (!query.trim()) return;
-    setSubmittedQuery(query.trim());
-    runSearch(query.trim());
+    const finalQuery = await runSearch(query.trim());
+    if (finalQuery) {
+      setSubmittedQuery(finalQuery);
+    }
   };
 
   const totalResults = useMemo(() => (
@@ -172,7 +178,7 @@ const UnifiedSearchModal = ({
                           <ResultChip label={`${trial.matchScore}% match`} />
                         </div>
                         <p className="text-sm text-gray-600">
-                          {trial.phase || 'Phase N/A'} • {trial.status || 'Status unknown'}
+                          {trial.phase || 'Phase N/A'} â€¢ {trial.status || 'Status unknown'}
                         </p>
                         <p className="text-xs text-gray-500">
                           {trial.location || trial.city || trial.country || 'Location not specified'}

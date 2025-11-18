@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Search, Book, ExternalLink, Star, Loader, BookmarkPlus, BookmarkCheck,
@@ -18,41 +18,46 @@ const Publications = () => {
   const [error, setError] = useState(null);
   const [savedPmids, setSavedPmids] = useState(new Set());
   const [retryStatus, setRetryStatus] = useState(null);
+  const patientCondition = useMemo(() => {
+    if (
+      userProfile?.role === 'patient' &&
+      userProfile?.condition &&
+      userProfile.condition !== 'Not specified'
+    ) {
+      return userProfile.condition.trim();
+    }
+    return '';
+  }, [userProfile]);
 
-  useEffect(() => {
-    const fetchUserData = async () => {
-      try {
-        if (!authService.isAuthenticated()) {
-          navigate('/login');
-          return;
-        }
-
-        const userData = await authService.getCurrentUser();
-        const condition = userData.profile?.condition || 'Not specified';
-
-        setUserProfile({
-          name: userData.user.name,
-          role: userData.user.role,
-          condition: condition,
-        });
-        setUserLoading(false);
-
-        // Auto-search by patient condition if available
-        if (userData.user.role === 'patient' && condition && condition !== 'Not specified') {
-          setSearchQuery(condition);
-          // Trigger search automatically
-          setTimeout(() => {
-            performSearch(condition);
-          }, 100);
-        }
-      } catch (error) {
-        console.error('Error fetching user data:', error);
-        navigate('/login');
+  const buildFinalQuery = useCallback(
+    (input = '') => {
+      const trimmedInput = input.trim();
+      if (!patientCondition) {
+        return trimmedInput;
       }
-    };
+      if (!trimmedInput) {
+        return patientCondition;
+      }
 
-    fetchUserData();
-  }, [navigate]);
+      const normalizedInput = trimmedInput.toLowerCase();
+      if (normalizedInput.includes(patientCondition.toLowerCase())) {
+        return trimmedInput;
+      }
+      return `${patientCondition} ${trimmedInput}`.trim();
+    },
+    [patientCondition]
+  );
+  const [activeQuery, setActiveQuery] = useState('');
+
+  const loadSavedPmids = useCallback(async () => {
+    try {
+      const savedResponse = await publicationService.getSavedPublications();
+      const savedList = savedResponse?.publications || [];
+      setSavedPmids(new Set(savedList.map((pub) => pub.pmid)));
+    } catch (loadError) {
+      console.error('Failed to load saved publications:', loadError);
+    }
+  }, []);
 
   const handleLogout = () => {
     authService.logout();
@@ -76,70 +81,114 @@ const Publications = () => {
         { id: 'favorites', label: 'My Favorites', icon: <Star />, path: '/researcher/dashboard', tab: 'favorites' },
       ];
 
-  const performSearch = useCallback(async (query, retryCount = 0) => {
-    const searchTerm = query || searchQuery;
+  const performSearch = useCallback(
+    async (queryParam, retryCount = 0) => {
+      const searchTerm = (queryParam || '').trim();
 
-    if (!searchTerm.trim() || searchTerm.trim().length < 3) {
+      if (!searchTerm || searchTerm.length < 3) {
+        setError('Please enter at least 3 characters');
+        setRetryStatus(null);
+        return;
+      }
+
+      if (retryCount === 0) {
+        setLoading(true);
+        setError(null);
+        setRetryStatus(null);
+      } else {
+        setRetryStatus(`Retrying... Attempt ${retryCount + 1}/4`);
+      }
+
+      try {
+        const { publications: results } = await publicationService.searchPublications(searchTerm);
+        setPublications(results || []);
+        if (!results || results.length === 0) {
+          setError('No publications found. Try different keywords.');
+        }
+        setRetryStatus(null);
+      } catch (err) {
+        console.error('Search error:', err);
+        if (retryCount < 3) {
+          await new Promise((resolve) => setTimeout(resolve, 1000 * (retryCount + 1)));
+          await performSearch(searchTerm, retryCount + 1);
+          return;
+        }
+        setError('Failed to search publications after multiple attempts. Please try again later.');
+        setRetryStatus(null);
+      } finally {
+        if (retryCount === 0) {
+          setLoading(false);
+        }
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    const fetchUserData = async () => {
+      try {
+        if (!authService.isAuthenticated()) {
+          navigate('/login');
+          return;
+        }
+
+        const userData = await authService.getCurrentUser();
+        const condition = userData.profile?.condition || 'Not specified';
+
+        setUserProfile({
+          name: userData.user.name,
+          role: userData.user.role,
+          condition: condition,
+        });
+        await loadSavedPmids();
+
+        if (userData.user.role === 'patient' && condition && condition !== 'Not specified') {
+          setSearchQuery(condition);
+          setActiveQuery(condition);
+          performSearch(condition);
+        }
+
+        setUserLoading(false);
+      } catch (error) {
+        console.error('Error fetching user data:', error);
+        navigate('/login');
+      }
+    };
+
+    fetchUserData();
+  }, [navigate, loadSavedPmids, performSearch]);
+
+  const handleSearch = useCallback(async (e) => {
+    e?.preventDefault();
+    const finalQuery = buildFinalQuery(searchQuery);
+    const trimmed = finalQuery.trim();
+    if (!trimmed || trimmed.length < 3) {
       setError('Please enter at least 3 characters');
       setRetryStatus(null);
       return;
     }
-
-    setLoading(true);
-    setError(null);
-
-    // Show retry status if this is a retry attempt
-    if (retryCount > 0) {
-      setRetryStatus(`Retrying... Attempt ${retryCount + 1}/4`);
-    }
-
-    try {
-      const { publications: results } = await publicationService.searchPublications(searchTerm);
-      setPublications(results || []);
-      setRetryStatus(null); // Clear retry status on success
-
-      if (results.length === 0) {
-        setError('No publications found. Try different keywords.');
-      }
-    } catch (err) {
-      console.error('Search error:', err);
-
-      // Automatic retry logic - retry up to 3 times
-      if (retryCount < 3) {
-        console.log(`Retrying search... Attempt ${retryCount + 2}/4`);
-        // Wait a bit before retrying (exponential backoff)
-        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
-        // Retry the search
-        return performSearch(searchTerm, retryCount + 1);
-      } else {
-        setError('Failed to search publications after multiple attempts. Please try again later.');
-        setRetryStatus(null);
-      }
-    } finally {
-      if (retryCount >= 3 || !error) {
-        setLoading(false);
-      }
-    }
-  }, [searchQuery, error]);
-
-  const handleSearch = useCallback(async (e) => {
-    e?.preventDefault();
-    await performSearch();
-  }, [performSearch]);
+    setActiveQuery(trimmed);
+    await performSearch(trimmed);
+  }, [buildFinalQuery, performSearch, searchQuery]);
 
   const handleSaveToggle = async (pmid) => {
     try {
       if (savedPmids.has(pmid)) {
         await publicationService.unsavePublication(pmid);
-        setSavedPmids(prev => {
+        setSavedPmids((prev) => {
           const newSet = new Set(prev);
           newSet.delete(pmid);
           return newSet;
         });
       } else {
         await publicationService.savePublication(pmid);
-        setSavedPmids(prev => new Set(prev).add(pmid));
+        setSavedPmids((prev) => {
+          const newSet = new Set(prev);
+          newSet.add(pmid);
+          return newSet;
+        });
       }
+      await loadSavedPmids();
     } catch (err) {
       console.error('Save toggle error:', err);
     }
@@ -214,9 +263,9 @@ const Publications = () => {
               <h1 className="text-3xl font-bold text-gray-900 mb-2">Research Publications</h1>
               <p className="text-gray-600">
                 Search for relevant medical research papers with AI-generated summaries
-                {userProfile?.role === 'patient' && userProfile?.condition !== 'Not specified' && (
+                {activeQuery && (
                   <span className="ml-2 text-sm text-primary-600">
-                    • Showing results for: {userProfile?.condition}
+                    • Showing results for: {activeQuery}
                   </span>
                 )}
               </p>

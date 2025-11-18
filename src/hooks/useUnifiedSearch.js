@@ -23,18 +23,19 @@ const clampScore = (value) => Math.max(0, Math.min(100, Math.round(value)));
 
 const computeExpertScore = (expert, keywords, context) => {
   let score = 0;
-  score += textMatchScore(expert.name, keywords) * 55;
-  score += textMatchScore(expert.institution, keywords) * 20;
-  score += textMatchScore((expert.specialties || []).join(' '), keywords) * 15;
-  score += textMatchScore(expert.researchInterests, keywords) * 15;
+  const specialtyText = (expert.specialties || []).join(' ');
+  const researchText = expert.researchInterests || '';
+  const combinedText = [expert.name, expert.institution, specialtyText, researchText]
+    .filter(Boolean)
+    .join(' ');
+  score += textMatchScore(combinedText, keywords) * 60;
 
   if (context?.condition) {
     const conditionToken = context.condition.toLowerCase();
-    if (
-      (expert.researchInterests || '').toLowerCase().includes(conditionToken) ||
-      (expert.specialties || []).some((spec) => spec.toLowerCase().includes(conditionToken))
-    ) {
-      score += 15;
+    const specialtyHit = (specialtyText || '').toLowerCase().includes(conditionToken);
+    const researchHit = (researchText || '').toLowerCase().includes(conditionToken);
+    if (specialtyHit || researchHit) {
+      score += 25;
     }
   }
 
@@ -45,30 +46,43 @@ const computeExpertScore = (expert, keywords, context) => {
     }
   }
 
+  if (expert.availableForMeetings) {
+    score += 3;
+  }
+
   return clampScore(score);
 };
 
 const computeTrialScore = (trial, keywords, context) => {
   let score = 0;
-  score += textMatchScore(trial.title, keywords) * 60;
-  score += textMatchScore(trial.condition, keywords) * 25;
-  score += textMatchScore(trial.summary, keywords) * 20;
+  const trialText = [
+    trial.title,
+    trial.condition,
+    Array.isArray(trial.tags) ? trial.tags.join(' ') : '',
+    trial.summary,
+    trial.sponsor,
+  ]
+    .filter(Boolean)
+    .join(' ');
+  score += textMatchScore(trialText, keywords) * 60;
 
   if (context?.condition && trial.condition) {
     if (trial.condition.toLowerCase().includes(context.condition.toLowerCase())) {
-      score += 15;
+      score += 20;
     }
   }
 
   if (context?.location) {
     const locationToken = context.location.toLowerCase();
-    if (
-      (trial.location && trial.location.toLowerCase().includes(locationToken)) ||
-      (trial.city && trial.city.toLowerCase().includes(locationToken)) ||
-      (trial.country && trial.country.toLowerCase().includes(locationToken))
-    ) {
+    const locationText = [trial.location, trial.city, trial.country].filter(Boolean).join(' ').toLowerCase();
+    if (locationText.includes(locationToken)) {
       score += 10;
     }
+  }
+
+  const status = (trial.status || '').toLowerCase();
+  if (status.includes('recruit') || status.includes('enroll')) {
+    score += 5;
   }
 
   return clampScore(score);
@@ -76,16 +90,20 @@ const computeTrialScore = (trial, keywords, context) => {
 
 const computeDiscussionScore = (question, keywords, context) => {
   let score = 0;
-  score += textMatchScore(question.title, keywords) * 60;
-  score += textMatchScore(question.question, keywords) * 40;
+  const discussionText = [
+    question.title,
+    question.question,
+    Array.isArray(question.tags) ? question.tags.join(' ') : '',
+    question.category,
+  ]
+    .filter(Boolean)
+    .join(' ');
+  score += textMatchScore(discussionText, keywords) * 70;
 
   if (context?.condition) {
     const conditionToken = context.condition.toLowerCase();
-    if (
-      question.title.toLowerCase().includes(conditionToken) ||
-      question.question.toLowerCase().includes(conditionToken)
-    ) {
-      score += 10;
+    if (discussionText.toLowerCase().includes(conditionToken)) {
+      score += 15;
     }
   }
 
@@ -106,7 +124,7 @@ const mergeQueryWithContext = (rawQuery = '', context = {}) => {
   if (lowerQuery.includes(lowerCondition)) {
     return trimmedQuery;
   }
-  return `${trimmedQuery} ${condition}`.trim();
+  return `${condition} ${trimmedQuery}`.trim();
 };
 
 export function useUnifiedSearch(context = {}) {
@@ -122,7 +140,7 @@ export function useUnifiedSearch(context = {}) {
       if (keywords.length === 0) {
         setResults({ experts: [], trials: [], discussions: [] });
         setError('Enter at least one keyword');
-        return;
+        return null;
       }
 
       setLoading(true);
@@ -139,6 +157,7 @@ export function useUnifiedSearch(context = {}) {
           clinicalTrialService.fetchClinicalTrials({
             search: mergedQuery,
             condition: context?.condition,
+            location: context?.location,
             limit: 40,
           }),
         ]);
@@ -170,6 +189,11 @@ export function useUnifiedSearch(context = {}) {
           .sort((a, b) => b.matchScore - a.matchScore)
           .slice(0, 10);
 
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[UnifiedSearch] experts', experts.slice(0, 3).map((e) => ({ name: e.name, score: e.matchScore })));
+          console.log('[UnifiedSearch] trials', trials.slice(0, 3).map((t) => ({ title: t.title, score: t.matchScore })));
+          console.log('[UnifiedSearch] discussions', discussions.slice(0, 3).map((d) => ({ title: d.title, score: d.matchScore })));
+        }
         setResults({ experts, trials, discussions });
       } catch (err) {
         console.error('Unified search error:', err);
@@ -177,6 +201,7 @@ export function useUnifiedSearch(context = {}) {
       } finally {
         setLoading(false);
       }
+      return mergedQuery;
     },
     [context, questions]
   );

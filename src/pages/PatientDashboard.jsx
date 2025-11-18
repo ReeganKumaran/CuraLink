@@ -258,16 +258,16 @@ const PatientDashboard = () => {
   const [expertsLoading, setExpertsLoading] = useState(false);
   const [expertsError, setExpertsError] = useState(null);
   const [expertSearch, setExpertSearch] = useState('');
+  const [expertActiveQuery, setExpertActiveQuery] = useState('');
   const [followedExpertIds, setFollowedExpertIds] = useState([]);
-  const searchDebounceRef = useRef(null);
   const [clinicalTrials, setClinicalTrials] = useState([]);
   const [trialsLoading, setTrialsLoading] = useState(false);
   const [trialsError, setTrialsError] = useState(null);
   const [trialFilters, setTrialFilters] = useState({ phase: 'all', location: 'all' });
   const [trialSearch, setTrialSearch] = useState('');
-  const trialSearchDebounceRef = useRef(null);
-  const trialSearchRef = useRef('');
-  const loadClinicalTrialsRef = useRef(() => {});
+  const [trialActiveQuery, setTrialActiveQuery] = useState('');
+  const trialActiveQueryRef = useRef('');
+  const [trialInitialized, setTrialInitialized] = useState(false);
   const [selectedTrial, setSelectedTrial] = useState(null);
   const [isMeetingModalOpen, setIsMeetingModalOpen] = useState(false);
   const [selectedExpert, setSelectedExpert] = useState(null);
@@ -299,17 +299,58 @@ const PatientDashboard = () => {
   const [favoritePublications, setFavoritePublications] = useState([]);
   const [favoritesLoading, setFavoritesLoading] = useState(false);
   const [favoritesError, setFavoritesError] = useState(null);
-  const [selectedFavorites, setSelectedFavorites] = useState(() => ({
-    experts: new Set(),
-    trials: new Set(),
-    publications: new Set(),
-  }));
+  const [selectedExpertIds, setSelectedExpertIds] = useState(() => new Set());
+  const [selectedTrialIds, setSelectedTrialIds] = useState(() => new Set());
+  const [selectedPublicationIds, setSelectedPublicationIds] = useState(() => new Set());
   const [exportStatus, setExportStatus] = useState(null);
   const [isExportingFavorites, setIsExportingFavorites] = useState(false);
+  const [exportSummaryText, setExportSummaryText] = useState('');
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [copySummaryStatus, setCopySummaryStatus] = useState(null);
   const pendingTrialFetches = useRef(new Set());
   const [followProcessingIds, setFollowProcessingIds] = useState(() => new Set());
   const [locationUpdating, setLocationUpdating] = useState(false);
   const [locationUpdateMessage, setLocationUpdateMessage] = useState(null);
+  const buildExpertQuery = useCallback(
+    (input = '') => {
+      const baseCondition =
+        userProfile?.condition && userProfile.condition !== 'Not specified'
+          ? userProfile.condition.trim()
+          : '';
+      const trimmedInput = input.trim();
+      if (!baseCondition) {
+        return trimmedInput;
+      }
+      if (!trimmedInput) {
+        return baseCondition;
+      }
+      if (trimmedInput.toLowerCase().includes(baseCondition.toLowerCase())) {
+        return trimmedInput;
+      }
+      return `${baseCondition} ${trimmedInput}`.trim();
+    },
+    [userProfile?.condition]
+  );
+  const buildTrialQuery = useCallback(
+    (input = '') => {
+      const baseCondition =
+        userProfile?.condition && userProfile.condition !== 'Not specified'
+          ? userProfile.condition.trim()
+          : '';
+      const trimmedInput = input.trim();
+      if (!baseCondition) {
+        return trimmedInput;
+      }
+      if (!trimmedInput) {
+        return baseCondition;
+      }
+      if (trimmedInput.toLowerCase().includes(baseCondition.toLowerCase())) {
+        return trimmedInput;
+      }
+      return `${baseCondition} ${trimmedInput}`.trim();
+    },
+    [userProfile?.condition]
+  );
 
   const unifiedSearchContext = useMemo(() => {
     const conditionValue =
@@ -433,10 +474,12 @@ const PatientDashboard = () => {
     [favoriteCollections.publications, favoritePublications]
   );
 
+  useEffect(() => {
+    setFollowedExpertIds(favoriteCollections.experts);
+  }, [favoriteCollections.experts]);
+
   const selectedFavoritesCount =
-    selectedFavorites.experts.size +
-    selectedFavorites.trials.size +
-    selectedFavorites.publications.size;
+    selectedExpertIds.size + selectedTrialIds.size + selectedPublicationIds.size;
   const hasFavoriteSelections = selectedFavoritesCount > 0;
 
   const updateFavoriteCollections = useCallback((type, values) => {
@@ -621,8 +664,116 @@ const handleTrialFilterChange = (field) => (event) => {
 const handleTrialSearchChange = (event) => {
   const value = event.target.value;
   setTrialSearch(value);
-  trialSearchRef.current = value.trim();
 };
+
+const loadClinicalTrials = useCallback(
+  async ({ query, location } = {}) => {
+    if (!userProfile) return;
+    setTrialsLoading(true);
+    setTrialsError(null);
+    try {
+      const params = {
+        limit: 40,
+        includeExternal: true,
+      };
+
+      if (trialFilters.phase !== 'all') {
+        params.phase = trialFilters.phase;
+      }
+
+      const locationFilter = location || trialFilters.location;
+      if (locationFilter === 'remote') {
+        params.remote = true;
+      } else if (locationFilter === 'near') {
+        params.remote = false;
+        if (userProfile?.city) params.city = userProfile.city;
+        if (userProfile?.country) params.country = userProfile.country;
+      }
+
+      const combinedQuery =
+        typeof query === 'string' && query.trim().length > 0
+          ? query.trim()
+          : trialActiveQueryRef.current || buildTrialQuery('');
+      if (combinedQuery) {
+        params.search = combinedQuery;
+      }
+
+      console.log('Patient fetching trials with params:', params);
+      const { trials } = await clinicalTrialService.fetchClinicalTrials(params);
+      console.log('Patient received trials:', trials?.length, 'trials');
+      console.log(
+        'Trial sources:',
+        trials?.map((t) => ({ title: t.title?.substring(0, 50), source: t.source }))
+      );
+      const locationLabel = [userProfile?.city, userProfile?.country].filter(Boolean).join(', ');
+      const context = {
+        condition: userProfile?.condition,
+        searchTerm: combinedQuery,
+        location: locationLabel,
+      };
+      const enrichedTrials = (trials || []).map((trial) => ({
+        ...trial,
+        matchScore: computeTrialMatchScore(trial, context),
+      }));
+      const sortedTrials = applyTrialLocationSort(enrichedTrials);
+
+      const patientCity = (userProfile?.city || '').toLowerCase();
+      const patientCountry = (userProfile?.country || '').toLowerCase();
+      const isNearTrial = (trial) => {
+        const locationText = [trial.location, trial.city, trial.country]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        const textMatch =
+          (patientCity && locationText.includes(patientCity)) ||
+          (patientCountry && locationText.includes(patientCountry));
+        const distanceMatch = Number.isFinite(trial.distanceKm) && trial.distanceKm <= 200;
+        return Boolean(textMatch || distanceMatch);
+      };
+      const isRemoteTrial = (trial) => {
+        const remoteKeywords = ['remote', 'virtual', 'online', 'telehealth', 'hybrid'];
+        const haystack = [trial.location, trial.summary, Array.isArray(trial.tags) ? trial.tags.join(' ') : '', trial.locationMatchLabel]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        const keywordMatch = remoteKeywords.some((keyword) => haystack.includes(keyword));
+        return Boolean(trial.isRemote || keywordMatch);
+      };
+
+      let prioritizedTrials = sortedTrials;
+      if (locationFilter === 'near') {
+        prioritizedTrials = [...sortedTrials].sort(
+          (a, b) => Number(isNearTrial(b)) - Number(isNearTrial(a))
+        );
+      } else if (locationFilter === 'remote') {
+        prioritizedTrials = [...sortedTrials].sort(
+          (a, b) => Number(isRemoteTrial(b)) - Number(isRemoteTrial(a))
+        );
+      }
+
+      setClinicalTrials(prioritizedTrials);
+      setTrialsUpdatedAt(Date.now());
+    } catch (error) {
+      console.error('Failed to load clinical trials:', error);
+      setTrialsError('Unable to load clinical trials right now. Please try again.');
+    } finally {
+      setTrialsLoading(false);
+    }
+  },
+  [userProfile, trialFilters.phase, trialFilters.location, buildTrialQuery, applyTrialLocationSort]
+);
+
+const handleTrialSearchSubmit = useCallback(
+  (event) => {
+    event?.preventDefault();
+    const combined = buildTrialQuery(trialSearch);
+    const finalQuery = combined || buildTrialQuery('');
+    setTrialActiveQuery(finalQuery);
+    setTrialInitialized(true);
+    loadClinicalTrials({ query: finalQuery });
+  },
+  [buildTrialQuery, trialSearch, loadClinicalTrials]
+);
 
 const getTrialStatusStyles = (status) => {
   const normalized = (status || '').toLowerCase();
@@ -646,71 +797,6 @@ const closeTrialDetails = () => {
   setSelectedTrial(null);
 };
 
-const loadClinicalTrials = useCallback(
-  async (overrideSearch) => {
-    if (!userProfile) return;
-    setTrialsLoading(true);
-    setTrialsError(null);
-    try {
-      const params = {
-        limit: 40,
-        includeExternal: true, // Always include external trials for patients
-      };
-
-      if (trialFilters.phase !== 'all') {
-        params.phase = trialFilters.phase;
-      }
-
-      if (trialFilters.location === 'remote') {
-        params.remote = true;
-      } else if (trialFilters.location === 'near') {
-        params.remote = false;
-        if (userProfile?.city) params.city = userProfile.city;
-        if (userProfile?.country) params.country = userProfile.country;
-      }
-
-      // Don't filter by patient condition - show all trials
-      // if (userProfile?.condition && userProfile.condition !== 'Not specified') {
-      //   params.condition = userProfile.condition;
-      // }
-
-      const searchTerm =
-        typeof overrideSearch === 'string' ? overrideSearch.trim() : trialSearchRef.current;
-      if (searchTerm) {
-        params.search = searchTerm;
-      }
-
-      console.log('Patient fetching trials with params:', params);
-      const { trials } = await clinicalTrialService.fetchClinicalTrials(params);
-      console.log('Patient received trials:', trials?.length, 'trials');
-      console.log('Trial sources:', trials?.map(t => ({ title: t.title?.substring(0, 50), source: t.source })));
-      const locationLabel = [userProfile?.city, userProfile?.country].filter(Boolean).join(', ');
-      const context = {
-        condition: userProfile?.condition,
-        searchTerm,
-        location: locationLabel,
-      };
-      const enrichedTrials = (trials || []).map((trial) => ({
-        ...trial,
-        matchScore: computeTrialMatchScore(trial, context),
-      }));
-      const sortedTrials = applyTrialLocationSort(enrichedTrials);
-      setClinicalTrials(sortedTrials);
-      setTrialsUpdatedAt(Date.now());
-    } catch (error) {
-      console.error('Failed to load clinical trials:', error);
-      setTrialsError('Unable to load clinical trials right now. Please try again.');
-    } finally {
-      setTrialsLoading(false);
-    }
-  },
-  [userProfile, trialFilters, applyTrialLocationSort]
-);
-
-useEffect(() => {
-  loadClinicalTrialsRef.current = loadClinicalTrials;
-}, [loadClinicalTrials]);
-
 const handleFollowToggle = async (expert) => {
   if (!expert || expert.source !== 'platform' || !expert.id) {
     setExpertsError('Following is only available for CuraLink researchers.');
@@ -731,10 +817,14 @@ const handleFollowToggle = async (expert) => {
       const nextFavorites = favoriteCollections.experts.filter((id) => id !== expert.id);
       updateFavoriteCollections('experts', nextFavorites);
       setFollowedExpertIds(nextFavorites);
-      setSelectedFavorites((prev) => ({
-        ...prev,
-        experts: new Set([...prev.experts].filter((id) => id !== expert.id)),
-      }));
+      setSelectedExpertIds((prev) => {
+        if (!prev.has(expert.id)) {
+          return prev;
+        }
+        const next = new Set(prev);
+        next.delete(expert.id);
+        return next;
+      });
     } else {
       await api.post(`/patients/favorites/experts/${expert.id}`);
       const nextFavorites = favoriteCollections.experts.includes(expert.id)
@@ -776,10 +866,10 @@ const closeMeetingModal = () => {
   setSelectedExpert(null);
 };
 
-const openMeetingChat = (request) => {
-  setChatMeetingRequest(request);
-  setIsMeetingChatOpen(true);
-};
+  const openMeetingChat = (request) => {
+    setChatMeetingRequest(request);
+    setIsMeetingChatOpen(true);
+  };
 
 const closeMeetingChat = () => {
   setIsMeetingChatOpen(false);
@@ -801,6 +891,67 @@ const handleUnifiedDiscussionView = (question) => {
   setIsUnifiedSearchOpen(false);
 };
 
+  const loadExperts = useCallback(
+    async (queryOverride = '') => {
+      if (!userProfile) return;
+      setExpertsLoading(true);
+      setExpertsError(null);
+      try {
+        const combinedQuery = queryOverride.trim()
+          ? queryOverride.trim()
+          : expertActiveQuery.trim()
+          ? expertActiveQuery.trim()
+          : buildExpertQuery('');
+
+        const conditionFilter =
+          userProfile.condition && userProfile.condition !== 'Not specified'
+            ? userProfile.condition
+            : undefined;
+
+        const locationHint = [userProfile.city, userProfile.country].filter(Boolean).join(', ') || undefined;
+
+        const { experts: fetchedExperts } = await expertService.fetchExperts({
+          search: combinedQuery || conditionFilter,
+          condition: conditionFilter,
+          location: locationHint,
+        });
+        const sortedExperts = applyExpertLocationSort(fetchedExperts || []);
+        setExperts(sortedExperts);
+        setExpertsUpdatedAt(Date.now());
+        setExpertCache((prev) => {
+          if (!Array.isArray(sortedExperts)) return prev;
+          const next = { ...prev };
+          sortedExperts.forEach((expert) => {
+            if (expert?.id) {
+              next[expert.id] = expert;
+            }
+          });
+          return next;
+        });
+      } catch (error) {
+        console.error('Failed to load experts:', error);
+        setExpertsError('Unable to load experts right now. Please try again.');
+      } finally {
+        setExpertsLoading(false);
+      }
+    },
+    [userProfile, expertActiveQuery, buildExpertQuery, applyExpertLocationSort]
+  );
+
+  const handleExpertSearchSubmit = useCallback(
+    (event) => {
+      event?.preventDefault();
+      const combined = buildExpertQuery(expertSearch);
+      const finalQuery = combined || buildExpertQuery('');
+      setExpertActiveQuery(finalQuery);
+      loadExperts(finalQuery);
+    },
+    [buildExpertQuery, expertSearch, loadExperts]
+  );
+  useEffect(() => {
+    trialActiveQueryRef.current = trialActiveQuery;
+  }, [trialActiveQuery]);
+
 const handleTrialFavoriteToggle = async (trial) => {
   if (!trial?.id) return;
   const trialId = trial.id;
@@ -809,23 +960,29 @@ const handleTrialFavoriteToggle = async (trial) => {
   try {
     setFavoritesError(null);
     if (isFavorite) {
-      await api.delete(`/patients/favorites/trials/${trialId}`);
+      await clinicalTrialService.removeTrialFavorite(trialId);
       const next = favoriteCollections.trials.filter((id) => id !== trialId);
       updateFavoriteCollections('trials', next);
-      setSelectedFavorites((prev) => ({
-        ...prev,
-        trials: new Set([...prev.trials].filter((id) => id !== trialId)),
-      }));
+      setSelectedTrialIds((prev) => {
+        if (!prev.has(trialId)) {
+          return prev;
+        }
+        const nextSet = new Set(prev);
+        nextSet.delete(trialId);
+        return nextSet;
+      });
+      setFavoriteTrialsCache((prev) => {
+        const nextCache = { ...prev };
+        delete nextCache[trialId];
+        return nextCache;
+      });
     } else {
-      await api.post(`/patients/favorites/trials/${trialId}`);
+      await clinicalTrialService.saveTrialFavorite(trialId);
       const next = favoriteCollections.trials.includes(trialId)
         ? favoriteCollections.trials
         : [...favoriteCollections.trials, trialId];
       updateFavoriteCollections('trials', next);
-      setFavoriteTrialsCache((prev) => ({
-        ...prev,
-        [trialId]: trial,
-      }));
+      await ensureTrialInCache(trialId);
     }
   } catch (error) {
     console.error('Failed to update trial favorite:', error);
@@ -848,10 +1005,14 @@ const handlePublicationFavoriteToggle = async (publication) => {
       const next = favoriteCollections.publications.filter((id) => id !== pmid);
       updateFavoriteCollections('publications', next);
       setFavoritePublications((prev) => prev.filter((pub) => pub.pmid !== pmid));
-      setSelectedFavorites((prev) => ({
-        ...prev,
-        publications: new Set([...prev.publications].filter((id) => id !== pmid)),
-      }));
+      setSelectedPublicationIds((prev) => {
+        if (!prev.has(pmid)) {
+          return prev;
+        }
+        const nextSet = new Set(prev);
+        nextSet.delete(pmid);
+        return nextSet;
+      });
     } else {
       await Promise.all([
         api.post(`/patients/favorites/publications/${pmid}`),
@@ -868,32 +1029,56 @@ const handlePublicationFavoriteToggle = async (publication) => {
   }
 };
 
-const toggleFavoriteSelection = useCallback((type, id) => {
-  if (!type || !id) return;
-  setSelectedFavorites((prev) => {
-    const nextSet = new Set(prev[type]);
-    if (nextSet.has(id)) {
-      nextSet.delete(id);
+const toggleExpertSelection = useCallback((id) => {
+  if (!id) return;
+  setSelectedExpertIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) {
+      next.delete(id);
     } else {
-      nextSet.add(id);
+      next.add(id);
     }
-    return { ...prev, [type]: nextSet };
+    return next;
+  });
+}, []);
+
+const toggleTrialSelection = useCallback((id) => {
+  if (!id) return;
+  setSelectedTrialIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    return next;
+  });
+}, []);
+
+const togglePublicationSelection = useCallback((pmid) => {
+  if (!pmid) return;
+  setSelectedPublicationIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(pmid)) {
+      next.delete(pmid);
+    } else {
+      next.add(pmid);
+    }
+    return next;
   });
 }, []);
 
 const clearFavoriteSelections = useCallback(() => {
-  setSelectedFavorites({
-    experts: new Set(),
-    trials: new Set(),
-    publications: new Set(),
-  });
+  setSelectedExpertIds(new Set());
+  setSelectedTrialIds(new Set());
+  setSelectedPublicationIds(new Set());
   setExportStatus(null);
 }, []);
 
 const buildFavoritesWorkbook = useCallback(() => {
-  const expertIds = Array.from(selectedFavorites.experts);
-  const trialIds = Array.from(selectedFavorites.trials);
-  const publicationIds = Array.from(selectedFavorites.publications);
+  const expertIds = Array.from(selectedExpertIds);
+  const trialIds = Array.from(selectedTrialIds);
+  const publicationIds = Array.from(selectedPublicationIds);
 
   const expertRows = expertIds
     .map((id) => {
@@ -962,12 +1147,177 @@ const buildFavoritesWorkbook = useCallback(() => {
     XLSX.utils.book_append_sheet(workbook, sheet, 'Publications');
   }
   return workbook;
-}, [selectedFavorites, expertCache, experts, favoriteTrialsCache, clinicalTrials, favoritePublications]);
+}, [
+  selectedExpertIds,
+  selectedTrialIds,
+  selectedPublicationIds,
+  expertCache,
+  experts,
+  favoriteTrialsCache,
+  clinicalTrials,
+  favoritePublications,
+]);
+
+const buildFavoritesExportSummary = useCallback(() => {
+  const patientCondition = userProfile?.condition?.trim() || 'Not specified';
+  const patientLocation =
+    [userProfile?.city, userProfile?.country].filter(Boolean).join(', ') || 'Not provided';
+
+  const selectedExpertsList = favoriteExpertsList.filter(
+    (expert) => expert?.id && selectedExpertIds.has(expert.id)
+  );
+  const selectedTrialsList = favoriteTrialsList.filter(
+    (trial) => trial?.id && selectedTrialIds.has(trial.id)
+  );
+  const selectedPublicationsList = favoritePublicationsList.filter(
+    (publication) => publication?.pmid && selectedPublicationIds.has(publication.pmid)
+  );
+
+  if (
+    selectedExpertsList.length === 0 &&
+    selectedTrialsList.length === 0 &&
+    selectedPublicationsList.length === 0
+  ) {
+    return '';
+  }
+
+  const lines = [
+    'CuraLink Favorites Summary',
+    '',
+    `Patient condition: ${patientCondition}`,
+    `Location: ${patientLocation}`,
+  ];
+
+  lines.push('');
+  lines.push('Selected Health Experts:');
+  if (selectedExpertsList.length === 0) {
+    lines.push('- None selected.');
+  } else {
+    selectedExpertsList.forEach((expert) => {
+      const specialties = Array.isArray(expert.specialties)
+        ? expert.specialties.join(', ')
+        : expert.specialties || expert.specialty || expert.researchInterests || '';
+      const locationText =
+        expert.location || [expert.institution, expert.city, expert.country].filter(Boolean).join(', ');
+      const specialtyText = specialties ? ` – ${specialties}` : '';
+      const locationSuffix = locationText ? ` (${locationText})` : '';
+      lines.push(`- ${expert.name || 'Health expert'}${specialtyText}${locationSuffix}`);
+      const researchFocus =
+        expert.researchSummary ||
+        expert.researchInterests ||
+        expert.researchFocus ||
+        expert.bio ||
+        '';
+      if (researchFocus) {
+        lines.push(`  Research focus: ${researchFocus}`);
+      }
+    });
+  }
+
+  lines.push('');
+  lines.push('Selected Clinical Trials:');
+  if (selectedTrialsList.length === 0) {
+    lines.push('- None selected.');
+  } else {
+    selectedTrialsList.forEach((trial) => {
+      const condition = trial.condition || 'Condition not listed';
+      const phase = trial.phase || 'Phase not specified';
+      const status = trial.status || 'Status not specified';
+      lines.push(
+        `- ${trial.title || 'Clinical Trial'} (${condition}, ${phase}, ${status})`
+      );
+      const trialLocation =
+        trial.location || [trial.city, trial.country].filter(Boolean).join(', ') || 'Multiple locations / TBD';
+      lines.push(`  Location: ${trialLocation}`);
+      const identifier = trial.nctId || trial.nct_id || trial.id || 'N/A';
+      lines.push(`  Identifier: ${identifier}`);
+      if (trial.isRemote) {
+        lines.push('  Notes: Remote-friendly / virtual participation available.');
+      }
+      const notes =
+        trial.aiSummary ||
+        trial.summary ||
+        trial.briefSummary ||
+        trial.description ||
+        trial.eligibility;
+      if (notes) {
+        lines.push(`  Notes: ${notes}`);
+      }
+    });
+  }
+
+  lines.push('');
+  lines.push('Selected Publications:');
+  if (selectedPublicationsList.length === 0) {
+    lines.push('- None selected.');
+  } else {
+    selectedPublicationsList.forEach((publication) => {
+      const journalLine = publication.journal || 'Journal not listed';
+      const yearLine = publication.year || 'Year not listed';
+      lines.push(`- "${publication.title || 'Untitled'}" – ${journalLine}, ${yearLine}`);
+      const url =
+        publication.url ||
+        publication.link ||
+        (publication.pmid ? `https://pubmed.ncbi.nlm.nih.gov/${publication.pmid}/` : '');
+      if (url) {
+        lines.push(`  Link: ${url}`);
+      }
+      if (publication.pmid) {
+        lines.push(`  PMID: ${publication.pmid}`);
+      }
+    });
+  }
+
+  return lines.join('\n').trim();
+}, [
+  userProfile?.condition,
+  userProfile?.city,
+  userProfile?.country,
+  favoriteExpertsList,
+  favoriteTrialsList,
+  favoritePublicationsList,
+  selectedExpertIds,
+  selectedTrialIds,
+  selectedPublicationIds,
+]);
+
+const handleCopyExportSummary = useCallback(async () => {
+  if (!exportSummaryText) return;
+  try {
+    if (typeof navigator !== 'undefined' && navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(exportSummaryText);
+      setCopySummaryStatus('Summary copied to clipboard.');
+    } else {
+      throw new Error('Clipboard API not available');
+    }
+  } catch (error) {
+    console.error('Failed to copy summary:', error);
+    setCopySummaryStatus('Unable to copy automatically. Please copy the text manually.');
+  }
+}, [exportSummaryText]);
+
+const closeExportModal = useCallback(() => {
+  setIsExportModalOpen(false);
+  setCopySummaryStatus(null);
+  setExportSummaryText('');
+}, []);
 
 const handleExportFavorites = useCallback(() => {
+  if (!hasFavoriteSelections) {
+    setExportStatus('Select at least one favorite to export.');
+    return;
+  }
+  const summary = buildFavoritesExportSummary();
+  if (!summary) {
+    setExportStatus('Select at least one favorite to export.');
+    return;
+  }
+  setExportSummaryText(summary);
+  setIsExportModalOpen(true);
+  setCopySummaryStatus(null);
+
   const workbook = buildFavoritesWorkbook();
   if (!workbook) {
-    setExportStatus('Select at least one favorite to export.');
     return;
   }
   setIsExportingFavorites(true);
@@ -983,7 +1333,11 @@ const handleExportFavorites = useCallback(() => {
   } finally {
     setIsExportingFavorites(false);
   }
-}, [buildFavoritesWorkbook]);
+}, [
+  hasFavoriteSelections,
+  buildFavoritesExportSummary,
+  buildFavoritesWorkbook,
+]);
 
 const ensureTrialInCache = useCallback(async (trialId) => {
   if (!trialId || favoriteTrialsCache[trialId]) return;
@@ -1014,17 +1368,45 @@ const ensureTrialInCache = useCallback(async (trialId) => {
   }
 }, [clinicalTrials, favoriteTrialsCache]);
 
-const loadFavoritePublications = useCallback(async () => {
-  if (!favoriteCollections.publications.length) {
+  const loadFavoritePublications = useCallback(async () => {
+    try {
+      const savedResponse = await publicationService.getSavedPublications();
+      const savedList = savedResponse?.publications || [];
+      setFavoritePublications(savedList);
+    const savedIds = savedList.map((pub) => pub.pmid);
+    updateFavoriteCollections('publications', savedIds);
+  } catch (error) {
+    console.error('Failed to load saved publications:', error);
     setFavoritePublications([]);
-    return;
   }
+}, [updateFavoriteCollections]);
 
-  const savedResponse = await publicationService.getSavedPublications();
-  const savedList = savedResponse?.publications || [];
-  const filtered = savedList.filter((pub) => favoriteCollections.publications.includes(pub.pmid));
-  setFavoritePublications(filtered);
-}, [favoriteCollections.publications]);
+  const hydrateFollowedExperts = useCallback(async () => {
+    const ids = favoriteCollections.experts.filter(Boolean);
+    const missingIds = ids.filter((id) => !expertCache[id]);
+    if (missingIds.length === 0) {
+      return;
+    }
+    try {
+      const { experts: fetched } = await expertService.fetchExperts({
+        search: '',
+        condition: '',
+        location: '',
+        limit: Math.max(50, ids.length * 2),
+      });
+      setExpertCache((prev) => {
+        const next = { ...prev };
+        (fetched || []).forEach((expert) => {
+          if (expert?.id && ids.includes(expert.id)) {
+            next[expert.id] = expert;
+          }
+        });
+        return next;
+      });
+    } catch (error) {
+      console.error('Failed to hydrate followed experts:', error);
+    }
+  }, [favoriteCollections.experts, expertCache]);
 const openExpertProfile = (expert) => {
   setProfileModalExpert(expert);
 };
@@ -1137,47 +1519,6 @@ const handleMeetingSubmit = async (event) => {
   }
 };
 
-  const loadExperts = useCallback(
-    async (term = '') => {
-      if (!userProfile) return;
-      setExpertsLoading(true);
-      setExpertsError(null);
-      try {
-        const conditionFilter =
-          userProfile.condition && userProfile.condition !== 'Not specified'
-            ? userProfile.condition
-            : undefined;
-
-        const locationHint = [userProfile.city, userProfile.country].filter(Boolean).join(', ') || undefined;
-
-        const { experts: fetchedExperts } = await expertService.fetchExperts({
-          search: term,
-          condition: conditionFilter,
-          location: locationHint,
-        });
-        const sortedExperts = applyExpertLocationSort(fetchedExperts || []);
-        setExperts(sortedExperts);
-        setExpertsUpdatedAt(Date.now());
-        setExpertCache((prev) => {
-          if (!Array.isArray(sortedExperts)) return prev;
-          const next = { ...prev };
-          sortedExperts.forEach((expert) => {
-            if (expert?.id) {
-              next[expert.id] = expert;
-            }
-          });
-          return next;
-        });
-      } catch (error) {
-        console.error('Failed to load experts:', error);
-        setExpertsError('Unable to load experts right now. Please try again.');
-      } finally {
-        setExpertsLoading(false);
-      }
-    },
-    [userProfile, applyExpertLocationSort]
-  );
-
   const loadMeetingRequests = useCallback(async () => {
     if (!userProfile) return;
     setMeetingRequestsLoading(true);
@@ -1223,8 +1564,8 @@ const handleMeetingSubmit = async (event) => {
               : prev
           );
           setLocationUpdateMessage('Location updated.');
-          loadExperts(expertSearch);
-          loadClinicalTrialsRef.current(trialSearchRef.current);
+          loadExperts(expertActiveQuery || buildExpertQuery(expertSearch));
+          loadClinicalTrials();
         } catch (error) {
           console.error('Failed to update location:', error);
           setLocationUpdateMessage('Unable to update location. Please try again.');
@@ -1241,41 +1582,44 @@ const handleMeetingSubmit = async (event) => {
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
-  }, [expertSearch, loadExperts, userProfile]);
+  }, [expertActiveQuery, buildExpertQuery, expertSearch, loadExperts, loadClinicalTrials, userProfile]);
 
-  useEffect(() => {
-    if (!userProfile) return;
-    loadExperts('');
-    loadMeetingRequests();
-  }, [userProfile, loadExperts, loadMeetingRequests]);
+useEffect(() => {
+  if (!userProfile) return;
+  const initialQuery = buildExpertQuery('');
+  setExpertSearch(initialQuery);
+  setExpertActiveQuery(initialQuery);
+  loadExperts(initialQuery);
+  loadMeetingRequests();
+}, [userProfile, buildExpertQuery, loadExperts, loadMeetingRequests]);
 
-  useEffect(() => {
-    if (!userProfile) return;
-    if (searchDebounceRef.current) {
-      clearTimeout(searchDebounceRef.current);
-    }
-    searchDebounceRef.current = setTimeout(() => {
-      loadExperts(expertSearch);
-    }, 400);
-    return () => {
-      if (searchDebounceRef.current) {
-        clearTimeout(searchDebounceRef.current);
-      }
-    };
-  }, [expertSearch, userProfile, loadExperts]);
+useEffect(() => {
+  if (!userProfile) return;
+  const initialTrialQuery = buildTrialQuery('');
+  setTrialSearch(initialTrialQuery);
+  setTrialActiveQuery(initialTrialQuery);
+  trialActiveQueryRef.current = initialTrialQuery;
+  loadClinicalTrials({ query: initialTrialQuery });
+  setTrialInitialized(true);
+}, [userProfile, buildTrialQuery, loadClinicalTrials]);
+
+useEffect(() => {
+  if (!favoriteCollections.experts.length) return;
+  hydrateFollowedExperts();
+}, [favoriteCollections.experts, hydrateFollowedExperts]);
 
   useEffect(() => {
     if (!userProfile) return;
     const intervalId = setInterval(() => {
-      loadExperts(expertSearch);
+      loadExperts(expertActiveQuery || buildExpertQuery(expertSearch));
     }, EXPERTS_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
-  }, [userProfile, loadExperts, expertSearch]);
+  }, [userProfile, loadExperts, expertActiveQuery, buildExpertQuery]);
 
   useEffect(() => {
-    if (!userProfile) return;
-    loadClinicalTrials(trialSearchRef.current);
-  }, [userProfile, trialFilters, loadClinicalTrials]);
+    if (!userProfile || !trialInitialized) return;
+    loadClinicalTrials();
+  }, [userProfile, trialInitialized, trialFilters.phase, trialFilters.location, loadClinicalTrials]);
 
 useEffect(() => {
   if (!Array.isArray(clinicalTrials) || clinicalTrials.length === 0) return;
@@ -1296,28 +1640,13 @@ useEffect(() => {
   });
 }, [favoriteCollections.trials, ensureTrialInCache]);
 
-  useEffect(() => {
-    if (!userProfile) return;
-    if (trialSearchDebounceRef.current) {
-      clearTimeout(trialSearchDebounceRef.current);
-    }
-  trialSearchDebounceRef.current = setTimeout(() => {
-    loadClinicalTrialsRef.current(trialSearchRef.current);
-  }, 400);
-  return () => {
-    if (trialSearchDebounceRef.current) {
-      clearTimeout(trialSearchDebounceRef.current);
-    }
-  };
-  }, [trialSearch, userProfile]);
-
-  useEffect(() => {
-    if (!userProfile) return;
-    const intervalId = setInterval(() => {
-      loadClinicalTrialsRef.current(trialSearchRef.current);
-    }, TRIALS_REFRESH_INTERVAL_MS);
-    return () => clearInterval(intervalId);
-  }, [userProfile]);
+useEffect(() => {
+  if (!userProfile || !trialInitialized) return;
+  const intervalId = setInterval(() => {
+    loadClinicalTrials();
+  }, TRIALS_REFRESH_INTERVAL_MS);
+  return () => clearInterval(intervalId);
+}, [userProfile, trialInitialized, loadClinicalTrials]);
 
 useEffect(() => {
   if (activeTab !== 'favorites') return;
@@ -1326,6 +1655,7 @@ useEffect(() => {
     setFavoritesLoading(true);
     setFavoritesError(null);
     try {
+      await hydrateFollowedExperts();
       await loadFavoritePublications();
       await Promise.all(favoriteCollections.trials.map((id) => ensureTrialInCache(id)));
     } catch (error) {
@@ -1343,16 +1673,33 @@ useEffect(() => {
   return () => {
     isMounted = false;
   };
-}, [activeTab, favoriteCollections.trials, loadFavoritePublications, ensureTrialInCache]);
+}, [activeTab, favoriteCollections.trials, loadFavoritePublications, ensureTrialInCache, hydrateFollowedExperts]);
 
 useEffect(() => {
-  setSelectedFavorites((prev) => ({
-    experts: new Set([...prev.experts].filter((id) => favoriteCollections.experts.includes(id))),
-    trials: new Set([...prev.trials].filter((id) => favoriteCollections.trials.includes(id))),
-    publications: new Set(
-      [...prev.publications].filter((id) => favoriteCollections.publications.includes(id))
-    ),
-  }));
+  setSelectedExpertIds((prev) => {
+    if (prev.size === 0) {
+      return prev;
+    }
+    const allowed = new Set(favoriteCollections.experts);
+    const filtered = new Set([...prev].filter((id) => allowed.has(id)));
+    return filtered.size === prev.size ? prev : filtered;
+  });
+  setSelectedTrialIds((prev) => {
+    if (prev.size === 0) {
+      return prev;
+    }
+    const allowed = new Set(favoriteCollections.trials);
+    const filtered = new Set([...prev].filter((id) => allowed.has(id)));
+    return filtered.size === prev.size ? prev : filtered;
+  });
+  setSelectedPublicationIds((prev) => {
+    if (prev.size === 0) {
+      return prev;
+    }
+    const allowed = new Set(favoriteCollections.publications);
+    const filtered = new Set([...prev].filter((id) => allowed.has(id)));
+    return filtered.size === prev.size ? prev : filtered;
+  });
 }, [favoriteCollections.experts, favoriteCollections.trials, favoriteCollections.publications]);
 
   const sidebarItems = useMemo(
@@ -1629,16 +1976,22 @@ useEffect(() => {
                 <div className="text-xs text-gray-500 text-right">
                   {formatLastUpdatedLabel(expertsUpdatedAt)}
                 </div>
-                <div className="relative w-full md:w-72">
+                <form onSubmit={handleExpertSearchSubmit} className="relative w-full md:w-72">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                   <input
                     type="text"
                     value={expertSearch}
                     onChange={(event) => setExpertSearch(event.target.value)}
                     placeholder="Search experts by name, specialty, or institution..."
-                    className="pl-10 pr-4 py-2 border rounded-lg text-sm w-full focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    className="pl-10 pr-24 py-2 border rounded-lg text-sm w-full focus:outline-none focus:ring-2 focus:ring-primary-500"
                   />
-                </div>
+                  <button
+                    type="submit"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 px-3 py-1 rounded-lg text-xs font-semibold text-white bg-primary-600 hover:bg-primary-700"
+                  >
+                    Search
+                  </button>
+                </form>
               </div>
             </div>
             {!patientLocation.city &&
@@ -1914,16 +2267,22 @@ useEffect(() => {
                 <div className="text-xs text-gray-500 text-right sm:mr-4">
                   {formatLastUpdatedLabel(trialsUpdatedAt)}
                 </div>
-                <div className="relative w-full sm:w-64">
+                <form onSubmit={handleTrialSearchSubmit} className="relative w-full sm:w-64">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                   <input
                     type="text"
                     value={trialSearch}
                     onChange={handleTrialSearchChange}
                     placeholder="Search trials by title or condition..."
-                    className="w-full rounded-lg border px-10 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    className="w-full rounded-lg border px-10 py-2 pr-24 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
                   />
-                </div>
+                  <button
+                    type="submit"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 rounded-lg bg-primary-600 px-3 py-1 text-xs font-semibold text-white hover:bg-primary-700"
+                  >
+                    Search
+                  </button>
+                </form>
                 <select
                   value={trialFilters.phase}
                   onChange={handleTrialFilterChange('phase')}
@@ -2286,8 +2645,8 @@ useEffect(() => {
                                   <input
                                     type="checkbox"
                                     className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                                    checked={selectedFavorites.experts.has(expert.id)}
-                                    onChange={() => toggleFavoriteSelection('experts', expert.id)}
+                                    checked={selectedExpertIds.has(expert.id)}
+                                    onChange={() => toggleExpertSelection(expert.id)}
                                   />
                                   Select
                                 </label>
@@ -2413,8 +2772,8 @@ useEffect(() => {
                                 <input
                                   type="checkbox"
                                   className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                                  checked={selectedFavorites.trials.has(trial.id)}
-                                  onChange={() => toggleFavoriteSelection('trials', trial.id)}
+                                  checked={selectedTrialIds.has(trial.id)}
+                                  onChange={() => toggleTrialSelection(trial.id)}
                                 />
                                 Select
                               </label>
@@ -2478,10 +2837,8 @@ useEffect(() => {
                                 <input
                                   type="checkbox"
                                   className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                                  checked={selectedFavorites.publications.has(publication.pmid)}
-                                  onChange={() =>
-                                    toggleFavoriteSelection('publications', publication.pmid)
-                                  }
+                                  checked={selectedPublicationIds.has(publication.pmid)}
+                                  onChange={() => togglePublicationSelection(publication.pmid)}
                                 />
                                 Select
                               </label>
@@ -3172,6 +3529,55 @@ useEffect(() => {
                   Close
                 </button>
               </div>
+            </div>
+      </div>
+    </div>
+  )}
+
+      {isExportModalOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40" onClick={closeExportModal} />
+          <div className="relative z-50 w-full max-w-3xl rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-900">Share favorites summary</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Copy this text to send your curated experts, trials, and publications to your care team.
+                </p>
+              </div>
+              <button
+                onClick={closeExportModal}
+                className="rounded-full p-2 text-gray-500 hover:bg-gray-100"
+                aria-label="Close summary"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <textarea
+                className="w-full h-64 rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-800 focus:outline-none"
+                readOnly
+                value={exportSummaryText}
+              />
+              {copySummaryStatus && (
+                <p className="mt-2 text-sm text-primary-600">{copySummaryStatus}</p>
+              )}
+            </div>
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+              <button
+                onClick={handleCopyExportSummary}
+                className="btn-primary w-full sm:w-auto"
+              >
+                Copy summary
+              </button>
+              <button
+                onClick={closeExportModal}
+                className="btn-secondary w-full sm:w-auto"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>

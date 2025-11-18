@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { Heart, User, BookOpen, Link, Calendar, ArrowRight, ArrowLeft, Eye, EyeOff, Sun, Moon } from 'lucide-react';
 import clsx from 'clsx';
 import { logo } from '../assets/assets';
@@ -70,7 +70,12 @@ const ResearcherOnboarding = () => {
         await authService.register(userData);
         navigate('/researcher/dashboard');
       } catch (err) {
-        setError(err.response?.data?.message || 'Registration failed. Please try again.');
+        const errorMsg = err.response?.data?.message || 'Registration failed. Please try again.';
+        if (typeof errorMsg === 'string' && errorMsg.toLowerCase().includes('already exists')) {
+          setError('An account already exists for this email. Please sign in instead.');
+        } else {
+          setError(errorMsg);
+        }
         setLoading(false);
       }
     }
@@ -104,6 +109,10 @@ const ResearcherOnboarding = () => {
         return false;
     }
   };
+
+  const showSignInCta =
+    typeof error === 'string' &&
+    (error.toLowerCase().includes('sign in') || error.toLowerCase().includes('already exists'));
 
   return (
     <div className={clsx(
@@ -367,13 +376,29 @@ const ResearcherOnboarding = () => {
 
           {/* Error Message */}
           {error && (
-            <div className={clsx(
-              'mt-6 px-4 py-3 rounded-lg text-sm border',
-              isDark
-                ? 'bg-red-500/10 border-red-400/40 text-red-200'
-                : 'bg-red-50 border-red-200 text-red-700'
-            )}>
-              {error}
+            <div
+              className={clsx(
+                'mt-6 px-4 py-3 rounded-lg text-sm border',
+                isDark
+                  ? 'bg-red-500/10 border-red-400/40 text-red-200'
+                  : 'bg-red-50 border-red-200 text-red-700'
+              )}
+            >
+              <p>{error}</p>
+              {showSignInCta && (
+                <p className="mt-2 text-xs">
+                  Already have an account?{' '}
+                  <RouterLink
+                    to="/login"
+                    className={clsx(
+                      'font-semibold underline-offset-2 hover:underline',
+                      isDark ? 'text-primary-200' : 'text-primary-600'
+                    )}
+                  >
+                    Sign in here
+                  </RouterLink>
+                </p>
+              )}
             </div>
           )}
 

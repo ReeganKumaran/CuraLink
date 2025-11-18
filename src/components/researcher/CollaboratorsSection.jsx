@@ -8,6 +8,7 @@ const ResearcherCollaboratorsSection = ({
   onOpenScheduleModal,
   onUpdateMeetingStatus,
   onOpenChat,
+  onConnectCollaborator,
   formatDistanceLabel,
   formatDate,
   formatDateTime,
@@ -219,7 +220,12 @@ const ResearcherCollaboratorsSection = ({
                           </p>
                         )}
                       </div>
-                      <button className="btn-secondary text-sm px-4 py-2">Connect</button>
+                      <button
+                        className="btn-secondary text-sm px-4 py-2"
+                        onClick={() => onConnectCollaborator && onConnectCollaborator(collaborator)}
+                      >
+                        Connect
+                      </button>
                     </div>
                   </div>
                 ))}

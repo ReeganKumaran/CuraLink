@@ -36,8 +36,18 @@ export async function createClinicalTrial(payload) {
   return response.data.data;
 }
 
+export async function saveTrialFavorite(trialId) {
+  await api.post(`/patients/favorites/trials/${trialId}`);
+}
+
+export async function removeTrialFavorite(trialId) {
+  await api.delete(`/patients/favorites/trials/${trialId}`);
+}
+
 export default {
   fetchClinicalTrials,
   fetchClinicalTrialById,
   createClinicalTrial,
+  saveTrialFavorite,
+  removeTrialFavorite,
 };

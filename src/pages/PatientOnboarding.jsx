@@ -110,6 +110,10 @@ const PatientOnboarding = () => {
     }
   };
 
+  const showSignInCta =
+    typeof error === 'string' &&
+    (error.toLowerCase().includes('sign in') || error.toLowerCase().includes('already'));
+
   return (
     <div className={clsx(
       'min-h-screen transition-colors duration-500',
@@ -358,6 +362,33 @@ const PatientOnboarding = () => {
                   />
                 </div>
               </div>
+            </div>
+          )}
+
+          {error && (
+            <div
+              className={clsx(
+                'mt-6 px-4 py-3 rounded-lg text-sm border',
+                isDark
+                  ? 'bg-red-500/10 border-red-400/40 text-red-200'
+                  : 'bg-red-50 border-red-200 text-red-700'
+              )}
+            >
+              <p>{error}</p>
+              {showSignInCta && (
+                <p className="mt-2 text-xs">
+                  Already have an account?{' '}
+                  <Link
+                    to="/login"
+                    className={clsx(
+                      'font-semibold underline-offset-2 hover:underline',
+                      isDark ? 'text-primary-200' : 'text-primary-600'
+                    )}
+                  >
+                    Sign in here
+                  </Link>
+                </p>
+              )}
             </div>
           )}
 
