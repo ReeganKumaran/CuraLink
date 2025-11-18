@@ -16,8 +16,11 @@ import { logo } from '../assets/assets';
 import authService from '../services/authService';
 import expertService from '../services/expertService';
 import aiService from '../services/aiService';
+import publicationService from '../services/publicationService';
 import { useForumData } from '../hooks/useForumData';
 import useCommunityChat from '../hooks/useCommunityChat';
+import { useCollaboratorNotifications } from '../hooks/useCollaboratorNotifications';
+import { playNotificationSound } from '../utils/notificationSound';
 import ChatWidget from '../components/ChatWidget';
 import api from '../services/api';
 import clinicalTrialService from '../services/clinicalTrialService';
@@ -39,6 +42,7 @@ import TrialDetailsModal from '../components/researcher/TrialDetailsModal';
 import ScheduleMeetingModal from '../components/researcher/ScheduleMeetingModal';
 import DiscussionModal from '../components/researcher/DiscussionModal';
 import MeetingChatModal from '../components/meetings/MeetingChatModal';
+import NotificationToast from '../components/NotificationToast';
 
 const hasCoordinates = (lat, lon) => Number.isFinite(lat) && Number.isFinite(lon);
 
@@ -150,6 +154,27 @@ const ResearcherDashboard = () => {
     isChatOpen,
   } = useCommunityChat();
 
+  // Collaborator notifications
+  const {
+    notifications: collaboratorNotifications,
+    unreadCount: unreadCollaboratorCount,
+    clearNotification: clearCollaboratorNotification,
+    connected: notificationSocketConnected,
+    error: notificationSocketError,
+  } = useCollaboratorNotifications();
+
+  // Debug: Log notification state changes
+  useEffect(() => {
+    console.log('🔔 Collaborator notifications updated:', collaboratorNotifications);
+    console.log('📊 Unread count:', unreadCollaboratorCount);
+    console.log('🔌 Socket connected:', notificationSocketConnected);
+    if (notificationSocketError) {
+      console.error('❌ Socket error:', notificationSocketError);
+    }
+  }, [collaboratorNotifications, unreadCollaboratorCount, notificationSocketConnected, notificationSocketError]);
+
+  const [visibleNotifications, setVisibleNotifications] = useState([]);
+
   const [communitySubmitting, setCommunitySubmitting] = useState(false);
   const [communitySubmitError, setCommunitySubmitError] = useState(null);
   const [chatMessage, setChatMessage] = useState('');
@@ -226,6 +251,11 @@ const ResearcherDashboard = () => {
   const [chatMeetingRequest, setChatMeetingRequest] = useState(null);
   const [locationUpdating, setLocationUpdating] = useState(false);
   const [locationUpdateMessage, setLocationUpdateMessage] = useState(null);
+  const [publications, setPublications] = useState([]);
+  const [publicationSearchQuery, setPublicationSearchQuery] = useState('');
+  const [publicationsLoading, setPublicationsLoading] = useState(false);
+  const [publicationsError, setPublicationsError] = useState(null);
+  const [savedPmids, setSavedPmids] = useState(new Set());
 
   const trialPhases = useMemo(
     () => ['Phase I', 'Phase II', 'Phase III', 'Phase IV', 'Observational'],
@@ -588,6 +618,19 @@ const resetTrialForm = useCallback(() => {
               ? Number(userData.profile.longitude)
               : null,
         });
+
+        // Load saved publications when user profile is loaded
+        try {
+          const savedResponse = await publicationService.getSavedPublications();
+          const savedList = savedResponse?.publications || [];
+          setSavedPmids(new Set(savedList.map((pub) => pub.pmid)));
+          if (savedList.length > 0) {
+            setPublications(savedList);
+          }
+        } catch (pubError) {
+          console.error('Failed to load saved publications:', pubError);
+        }
+
         setLoading(false);
       } catch (error) {
         console.error('Failed to fetch researcher profile', error);
@@ -651,6 +694,53 @@ const resetTrialForm = useCallback(() => {
 
     loadCollaboratorChat();
   }, [selectedCollaborator, userProfile?.id, collaboratorChats]);
+
+  // Handle incoming collaborator notifications
+  useEffect(() => {
+    if (collaboratorNotifications.length > 0) {
+      const latestNotif = collaboratorNotifications[collaboratorNotifications.length - 1];
+      if (!latestNotif.read) {
+        // Play notification sound
+        playNotificationSound();
+
+        // Show toast notification (will auto-dismiss after 5 seconds)
+        setVisibleNotifications(prev => [...prev, latestNotif]);
+
+        // If the chat is open with this sender, add message to the chat
+        const senderId = latestNotif.senderId;
+        if (senderId) {
+          setCollaboratorChats((prev) => ({
+            ...prev,
+            [senderId]: [...(prev[senderId] || []), {
+              id: latestNotif.id,
+              senderId: latestNotif.senderId,
+              recipientId: userProfile?.id,
+              message: latestNotif.message,
+              createdAt: latestNotif.createdAt,
+            }]
+          }));
+        }
+
+        // Don't clear immediately - let user dismiss from bell icon or notification will stay
+      }
+    }
+  }, [collaboratorNotifications, userProfile?.id]);
+
+  const handleViewNotification = (notification) => {
+    // Find the collaborator and open their chat
+    const collaborator = collaborators.find(c =>
+      (c.id || c.userId) === notification.senderId
+    );
+    if (collaborator) {
+      handleCollaboratorConnect(collaborator);
+    }
+  };
+
+  const handleCloseNotification = (notificationId) => {
+    setVisibleNotifications(prev =>
+      prev.filter(notif => notif.id !== notificationId)
+    );
+  };
 
   useEffect(() => {
     return () => {
@@ -845,6 +935,68 @@ const resetTrialForm = useCallback(() => {
   const handleLogout = () => {
     authService.logout();
     navigate('/');
+  };
+
+  // Publication handlers
+  const loadSavedPmids = useCallback(async () => {
+    try {
+      const savedResponse = await publicationService.getSavedPublications();
+      const savedList = savedResponse?.publications || [];
+      setSavedPmids(new Set(savedList.map((pub) => pub.pmid)));
+      // Also set these as the initial publications to show
+      if (savedList.length > 0) {
+        setPublications(savedList);
+      }
+    } catch (error) {
+      console.error('Failed to load saved publications:', error);
+    }
+  }, []);
+
+  const handlePublicationSearch = useCallback(async () => {
+    const searchTerm = publicationSearchQuery.trim();
+    if (!searchTerm || searchTerm.length < 3) {
+      setPublicationsError('Please enter at least 3 characters');
+      return;
+    }
+
+    setPublicationsLoading(true);
+    setPublicationsError(null);
+
+    try {
+      const { publications: results } = await publicationService.searchPublications(searchTerm);
+      setPublications(results || []);
+      if (!results || results.length === 0) {
+        setPublicationsError('No publications found. Try different keywords.');
+      }
+    } catch (error) {
+      console.error('Publication search error:', error);
+      setPublicationsError('Failed to search publications. Please try again.');
+    } finally {
+      setPublicationsLoading(false);
+    }
+  }, [publicationSearchQuery]);
+
+  const handleSaveToggle = async (pmid) => {
+    try {
+      if (savedPmids.has(pmid)) {
+        await publicationService.unsavePublication(pmid);
+        setSavedPmids((prev) => {
+          const newSet = new Set(prev);
+          newSet.delete(pmid);
+          return newSet;
+        });
+      } else {
+        await publicationService.savePublication(pmid);
+        setSavedPmids((prev) => {
+          const newSet = new Set(prev);
+          newSet.add(pmid);
+          return newSet;
+        });
+      }
+      await loadSavedPmids();
+    } catch (error) {
+      console.error('Save toggle error:', error);
+    }
   };
 
   const categories = useMemo(
@@ -1077,32 +1229,17 @@ const resetTrialForm = useCallback(() => {
     });
   }, [collaborators, trialSearchTerm]);
 
-  const mockPublications = [
-    {
-      id: 1,
-      title: 'Targeted Therapies for Glioblastoma',
-      journal: 'Nature Medicine',
-      year: 2024,
-    },
-    {
-      id: 2,
-      title: 'Adaptive Trial Designs in Oncology',
-      journal: 'The Lancet',
-      year: 2023,
-    },
-    {
-      id: 3,
-      title: 'Precision Medicine for Rare Cancers',
-      journal: 'Science Translational Medicine',
-      year: 2023,
-    },
-  ];
 
-  const favoriteItems = [
-    { id: 1, type: 'Trial', label: 'Glioblastoma Study 23A', note: 'Recruiting' },
-    { id: 2, type: 'Publication', label: 'AI-assisted Diagnostics', note: 'To review' },
-    { id: 3, type: 'Collaborator', label: 'Dr. Priya Nair', note: 'Requested meeting' },
-  ];
+  // Get saved items for favorites
+  const savedTrials = useMemo(() => {
+    // Filter trials that are bookmarked/saved by the user
+    return trials.filter(trial => trial.createdBy === userProfile?.id);
+  }, [trials, userProfile?.id]);
+
+  const savedCollaborators = useMemo(() => {
+    // For now, return empty array - can be enhanced with actual saved collaborators
+    return [];
+  }, []);
 
   const pendingQuestions = questions.filter((question) => question.replies.length === 0);
 
@@ -1415,9 +1552,38 @@ const resetTrialForm = useCallback(() => {
           />
         );
       case 'publications':
-        return <ResearcherPublicationsSection publications={mockPublications} />;
+        return (
+          <ResearcherPublicationsSection
+            publications={publications}
+            savedPmids={savedPmids}
+            onSaveToggle={handleSaveToggle}
+            onSearch={handlePublicationSearch}
+            searchQuery={publicationSearchQuery}
+            onSearchChange={setPublicationSearchQuery}
+            loading={publicationsLoading}
+            error={publicationsError}
+          />
+        );
       case 'favorites':
-        return <ResearcherFavoritesSection items={favoriteItems} />;
+        return (
+          <ResearcherFavoritesSection
+            savedTrials={savedTrials}
+            savedPublications={publications}
+            savedCollaborators={savedCollaborators}
+            onOpenTrial={(trial) => {
+              setSelectedTrialId(trial.id);
+              setIsTrialDetailsModalOpen(true);
+            }}
+            onOpenPublication={(pub) => {
+              if (pub.link) {
+                window.open(pub.link, '_blank');
+              }
+            }}
+            onOpenCollaborator={(collaborator) => {
+              handleCollaboratorConnect(collaborator);
+            }}
+          />
+        );
       default:
         return null;
     }
@@ -1438,6 +1604,17 @@ const resetTrialForm = useCallback(() => {
 
   return (
     <>
+      {/* Toast Notifications */}
+      {visibleNotifications.map((notif, index) => (
+        <div key={notif.id} style={{ top: `${16 + index * 90}px` }}>
+          <NotificationToast
+            notification={notif}
+            onClose={() => handleCloseNotification(notif.id)}
+            onView={handleViewNotification}
+          />
+        </div>
+      ))}
+
       <div className="min-h-screen bg-gray-50 flex">
         <ResearcherSidebar
           logoSrc={logo}
@@ -1452,6 +1629,16 @@ const resetTrialForm = useCallback(() => {
             userProfile={userProfile}
             onAskQuestion={() => setIsAskModalOpen(true)}
             onCreateCommunity={handleOpenCommunityModal}
+            notifications={collaboratorNotifications}
+            onViewNotification={handleViewNotification}
+            onClearNotification={(notificationId) => {
+              clearCollaboratorNotification(notificationId);
+            }}
+            onClearAllNotifications={() => {
+              collaboratorNotifications.forEach(notif => {
+                clearCollaboratorNotification(notif.id);
+              });
+            }}
           />
           <div className="card">
             <div className="flex flex-col md:flex-row md:items-center gap-4">

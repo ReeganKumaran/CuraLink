@@ -1589,9 +1589,50 @@ useEffect(() => {
   const initialQuery = buildExpertQuery('');
   setExpertSearch(initialQuery);
   setExpertActiveQuery(initialQuery);
-  loadExperts(initialQuery);
+
+  // Load experts directly without depending on loadExperts callback
+  const fetchInitialExperts = async () => {
+    setExpertsLoading(true);
+    setExpertsError(null);
+    try {
+      const conditionFilter =
+        userProfile.condition && userProfile.condition !== 'Not specified'
+          ? userProfile.condition
+          : undefined;
+
+      const locationHint = [userProfile.city, userProfile.country].filter(Boolean).join(', ') || undefined;
+
+      const { experts: fetchedExperts } = await expertService.fetchExperts({
+        search: initialQuery || conditionFilter,
+        condition: conditionFilter,
+        location: locationHint,
+      });
+      const sortedExperts = applyExpertLocationSort(fetchedExperts || []);
+      setExperts(sortedExperts);
+      setExpertsUpdatedAt(Date.now());
+      setExpertCache((prev) => {
+        if (!Array.isArray(sortedExperts)) return prev;
+        const next = { ...prev };
+        sortedExperts.forEach((expert) => {
+          if (expert?.id) {
+            next[expert.id] = expert;
+          }
+        });
+        return next;
+      });
+    } catch (error) {
+      console.error('Failed to load experts:', error);
+      setExpertsError('Unable to load experts right now. Please try again.');
+    } finally {
+      setExpertsLoading(false);
+    }
+  };
+
+  fetchInitialExperts();
   loadMeetingRequests();
-}, [userProfile, buildExpertQuery, loadExperts, loadMeetingRequests]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [userProfile?.id, loadMeetingRequests]);
 
 useEffect(() => {
   if (!userProfile) return;
@@ -1601,12 +1642,14 @@ useEffect(() => {
   trialActiveQueryRef.current = initialTrialQuery;
   loadClinicalTrials({ query: initialTrialQuery });
   setTrialInitialized(true);
-}, [userProfile, buildTrialQuery, loadClinicalTrials]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [userProfile?.id]);
 
 useEffect(() => {
   if (!favoriteCollections.experts.length) return;
   hydrateFollowedExperts();
-}, [favoriteCollections.experts, hydrateFollowedExperts]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [favoriteCollections.experts.length]);
 
   useEffect(() => {
     if (!userProfile) return;
@@ -1614,12 +1657,14 @@ useEffect(() => {
       loadExperts(expertActiveQuery || buildExpertQuery(expertSearch));
     }, EXPERTS_REFRESH_INTERVAL_MS);
     return () => clearInterval(intervalId);
-  }, [userProfile, loadExperts, expertActiveQuery, buildExpertQuery]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userProfile?.id, expertActiveQuery, expertSearch]);
 
   useEffect(() => {
     if (!userProfile || !trialInitialized) return;
     loadClinicalTrials();
-  }, [userProfile, trialInitialized, trialFilters.phase, trialFilters.location, loadClinicalTrials]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userProfile?.id, trialInitialized, trialFilters.phase, trialFilters.location]);
 
 useEffect(() => {
   if (!Array.isArray(clinicalTrials) || clinicalTrials.length === 0) return;
@@ -1638,7 +1683,8 @@ useEffect(() => {
   favoriteCollections.trials.forEach((trialId) => {
     ensureTrialInCache(trialId);
   });
-}, [favoriteCollections.trials, ensureTrialInCache]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [favoriteCollections.trials.length]);
 
 useEffect(() => {
   if (!userProfile || !trialInitialized) return;
@@ -1646,18 +1692,25 @@ useEffect(() => {
     loadClinicalTrials();
   }, TRIALS_REFRESH_INTERVAL_MS);
   return () => clearInterval(intervalId);
-}, [userProfile, trialInitialized, loadClinicalTrials]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [userProfile?.id, trialInitialized]);
 
 useEffect(() => {
   if (activeTab !== 'favorites') return;
+  console.log('[DEBUG] Loading favorites tab');
+  console.log('[DEBUG] Favorite collections:', favoriteCollections);
   let isMounted = true;
   const hydrateFavorites = async () => {
     setFavoritesLoading(true);
     setFavoritesError(null);
     try {
+      console.log('[DEBUG] Hydrating followed experts...');
       await hydrateFollowedExperts();
+      console.log('[DEBUG] Loading favorite publications...');
       await loadFavoritePublications();
+      console.log('[DEBUG] Ensuring trials in cache...');
       await Promise.all(favoriteCollections.trials.map((id) => ensureTrialInCache(id)));
+      console.log('[DEBUG] Favorites hydration completed');
     } catch (error) {
       if (isMounted) {
         console.error('Favorites hydration failed:', error);
@@ -1665,6 +1718,7 @@ useEffect(() => {
       }
     } finally {
       if (isMounted) {
+        console.log('[DEBUG] Setting favoritesLoading to false');
         setFavoritesLoading(false);
       }
     }
@@ -1673,7 +1727,8 @@ useEffect(() => {
   return () => {
     isMounted = false;
   };
-}, [activeTab, favoriteCollections.trials, loadFavoritePublications, ensureTrialInCache, hydrateFollowedExperts]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [activeTab]);
 
 useEffect(() => {
   setSelectedExpertIds((prev) => {

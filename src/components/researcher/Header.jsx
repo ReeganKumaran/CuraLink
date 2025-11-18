@@ -1,7 +1,15 @@
-import React from 'react';
 import { MessageCircle, Plus } from 'lucide-react';
+import NotificationBell from '../NotificationBell';
 
-const ResearcherHeader = ({ userProfile, onAskQuestion, onCreateCommunity }) => (
+const ResearcherHeader = ({
+  userProfile,
+  onAskQuestion,
+  onCreateCommunity,
+  notifications = [],
+  onViewNotification,
+  onClearNotification,
+  onClearAllNotifications
+}) => (
   <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
     <div>
       <h1 className="text-2xl font-semibold text-gray-900">
@@ -13,6 +21,12 @@ const ResearcherHeader = ({ userProfile, onAskQuestion, onCreateCommunity }) => 
     </div>
 
     <div className="flex flex-wrap items-center gap-3">
+      <NotificationBell
+        notifications={notifications}
+        onViewNotification={onViewNotification}
+        onClearNotification={onClearNotification}
+        onClearAll={onClearAllNotifications}
+      />
       <button
         onClick={onAskQuestion}
         className="btn-secondary inline-flex items-center gap-2 px-4 py-2"
